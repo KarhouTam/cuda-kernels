@@ -145,26 +145,9 @@ __global__ void online_softmax_kernel3(float* input, float* output, const int M,
     }
 }
 
-template <typename Kernel>
-void execute_kernel(Kernel kernel, const int gridSize, const int blockSize,
-                    float* inputGPU, float* outputGPU, float* resFromGPU,
-                    const int M, const int N, float* elapsedTime) {
-    cudaEvent_t begin, end;
-    cudaErrorCheck(cudaEventCreate(&begin));
-    cudaErrorCheck(cudaEventCreate(&end));
-    cudaEventRecord(begin);
-    kernel<<<gridSize, blockSize>>>(inputGPU, outputGPU, M, N);
-    cudaEventRecord(end);
-    cudaErrorCheck(cudaEventSynchronize(begin));
-    cudaErrorCheck(cudaEventSynchronize(end));
-    cudaErrorCheck(cudaEventElapsedTime(elapsedTime, begin, end));
-    cudaErrorCheck(cudaMemcpy(resFromGPU, outputGPU, M * N * sizeof(float),
-                              cudaMemcpyDeviceToHost));
-}
-
 #define M 8196
 #define N 8196
-#define BLOCK_SIZE 256
+#define BLOCK_SIZE 128
 
 int main(int argc, char** argv) {
     if (argc < 2) {
@@ -172,12 +155,12 @@ int main(int argc, char** argv) {
         return EXIT_FAILURE;
     }
     int kernel = atoi(argv[1]);
-    
+
     int blockSize = BLOCK_SIZE;
     if (argc > 2) {
         blockSize = atoi(argv[2]);
     }
-    
+
     float* input = (float*)malloc(M * N * sizeof(float));
     float* output = (float*)malloc(M * N * sizeof(float));
     float* resFromGPU = (float*)malloc(M * N * sizeof(float));
@@ -190,26 +173,23 @@ int main(int argc, char** argv) {
     cudaErrorCheck(cudaMalloc(&outputGPU, M * N * sizeof(float)));
 
     float elapsedTime;
-    cudaEvent_t begin, end;
-    cudaErrorCheck(cudaEventCreate(&begin));
-    cudaErrorCheck(cudaEventCreate(&end));
-
     online_softmax_cpu(input, output, M, N);
 
     switch (kernel) {
         case 1:
-            execute_kernel(softmax_kernel1, M * N / blockSize, blockSize,
-                           inputGPU, outputGPU, resFromGPU, M, N, &elapsedTime);
+            benchmark_kernel(softmax_kernel1, M * N / blockSize, blockSize,
+                             inputGPU, outputGPU, resFromGPU, M, N,
+                             &elapsedTime);
             break;
         case 2:
-            execute_kernel(softmax_kernel2, ceilDiv(M * 32, blockSize),
-                           blockSize, inputGPU, outputGPU, resFromGPU, M, N,
-                           &elapsedTime);
+            benchmark_kernel(softmax_kernel2, ceilDiv(M * 32, blockSize),
+                             blockSize, inputGPU, outputGPU, resFromGPU, M, N,
+                             &elapsedTime);
             break;
         case 3:
-            execute_kernel(online_softmax_kernel3, ceilDiv(M * 32, blockSize),
-                           blockSize, inputGPU, outputGPU, resFromGPU, M, N,
-                           &elapsedTime);
+            benchmark_kernel(online_softmax_kernel3, ceilDiv(M * 32, blockSize),
+                             blockSize, inputGPU, outputGPU, resFromGPU, M, N,
+                             &elapsedTime);
             break;
         default:
             printf("Error: Invalid kernel type: %i\n", kernel);
@@ -225,8 +205,6 @@ int main(int argc, char** argv) {
     free(input);
     free(output);
     free(resFromGPU);
-    cudaErrorCheck(cudaEventDestroy(begin));
-    cudaErrorCheck(cudaEventDestroy(end));
     cudaErrorCheck(cudaFree(inputGPU));
     cudaErrorCheck(cudaFree(outputGPU));
     return EXIT_SUCCESS;
