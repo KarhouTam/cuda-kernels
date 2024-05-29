@@ -1,0 +1,1 @@
+add_executable(relu_forward relu_forward.cu)
