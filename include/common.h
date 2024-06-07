@@ -39,7 +39,7 @@ bool checkResults(float* resCPU, float* resFromGPU, const int N) {
 
 __device__ float warpReduceMax(float val) {
     for (int offset = warpSize / 2; offset > 0; offset >>= 1) {
-        val = fmaxf(val, __shfl_down_sync(0xFFFFFFFF, val, offset));
+        val = fmaxf(val, __shfl_xor_sync(0xFFFFFFFF, val, offset));
     }
     return val;
 }

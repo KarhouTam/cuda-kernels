@@ -90,7 +90,6 @@ __global__ void softmax_kernel2(float* input, float* output, const int M,
         // warp-reduce to calculate the MAX of maxval among all lanes
         // and the 0-th lane will store the result
         maxval = warpReduceMax(maxval);
-        maxval = __shfl_sync(0xFFFFFFFF, maxval, 0);
 
         float sum = 0.0f;
         for (int i = laneId; i < N; i += warpSize) {
@@ -98,7 +97,6 @@ __global__ void softmax_kernel2(float* input, float* output, const int M,
         }
 
         sum = warpReduceSum(sum);
-        sum = __shfl_sync(0xFFFFFFFF, sum, 0);
         for (int i = laneId; i < N; i += warpSize) {
             y[i] = expf(x[i] - maxval) / sum;
         }
@@ -125,8 +123,8 @@ __global__ void online_softmax_kernel3(float* input, float* output, const int M,
         float offsetMax, offsetSum;
         for (int offset = warpSize / 2; offset > 0; offset >>= 1) {
             __syncwarp();
-            offsetMax = __shfl_down_sync(0xFFFFFFFF, maxval, offset);
-            offsetSum = __shfl_down_sync(0xFFFFFFFF, sum, offset);
+            offsetMax = __shfl_xor_sync(0xFFFFFFFF, maxval, offset);
+            offsetSum = __shfl_xor_sync(0xFFFFFFFF, sum, offset);
             if (offsetMax > maxval) {
                 sum *= expf(maxval - offsetMax);
                 maxval = offsetMax;
@@ -135,10 +133,6 @@ __global__ void online_softmax_kernel3(float* input, float* output, const int M,
             }
             sum += offsetSum;
         }
-
-        maxval = __shfl_sync(0xFFFFFFFF, maxval, 0);
-        sum = __shfl_sync(0xFFFFFFFF, sum, 0);
-
         for (int i = laneId; i < N; i += warpSize) {
             y[i] = expf(x[i] - maxval) / sum;
         }
