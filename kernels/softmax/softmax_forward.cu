@@ -171,31 +171,48 @@ int main(int argc, char** argv) {
 
     switch (kernel) {
         case 1:
-            benchmark_kernel(softmax_kernel1, M * N / blockSize, blockSize,
-                             inputGPU, outputGPU, resFromGPU, M, N,
-                             &elapsedTime);
+            softmax_kernel1<<<M * N / blockSize, blockSize>>>(inputGPU,
+                                                              outputGPU, M, N);
             break;
         case 2:
-            benchmark_kernel(softmax_kernel2, ceilDiv(M * 32, blockSize),
-                             blockSize, inputGPU, outputGPU, resFromGPU, M, N,
-                             &elapsedTime);
+            softmax_kernel2<<<ceilDiv(M * 32, blockSize), blockSize>>>(
+                inputGPU, outputGPU, M, N);
             break;
         case 3:
-            benchmark_kernel(online_softmax_kernel3, ceilDiv(M * 32, blockSize),
-                             blockSize, inputGPU, outputGPU, resFromGPU, M, N,
-                             &elapsedTime);
+            online_softmax_kernel3<<<ceilDiv(M * 32, blockSize), blockSize>>>(
+                inputGPU, outputGPU, M, N);
             break;
         default:
             printf("Error: Invalid kernel type: %i\n", kernel);
             return EXIT_FAILURE;
     }
+    cudaErrorCheck(cudaMemcpy(resFromGPU, outputGPU, M * N * sizeof(float),
+                              cudaMemcpyDeviceToHost));
+    cudaErrorCheck(cudaDeviceSynchronize());
 
     if (checkResults(output, resFromGPU, M * N)) {
+        switch (kernel) {
+            case 1:
+                benchmarkKernel(softmax_kernel1, M * N / blockSize, blockSize,
+                                &elapsedTime, inputGPU, outputGPU, M, N);
+                break;
+            case 2:
+                benchmarkKernel(softmax_kernel2, ceilDiv(M * 32, blockSize),
+                                blockSize, &elapsedTime, inputGPU, outputGPU, M,
+                                N);
+                break;
+            case 3:
+                benchmarkKernel(online_softmax_kernel3,
+                                ceilDiv(M * 32, blockSize), blockSize,
+                                &elapsedTime, inputGPU, outputGPU, M, N);
+                break;
+        }
         printf(
             "softmax_forward kernel: %i | matrixSize: %i x %i | Times: %f ms | "
             "blockSize: %i\n",
             kernel, M, N, elapsedTime, blockSize);
     }
+
     free(input);
     free(output);
     free(resFromGPU);

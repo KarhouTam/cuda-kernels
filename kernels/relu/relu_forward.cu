@@ -10,8 +10,8 @@ void relu_cpu(float* input, float* output, const int M, const int N) {
     }
 }
 
-__global__ void relu_forward_kernel1(const float* input, float* output,
-                                     const int M, const int N) {
+__global__ void relu_kernel1(const float* input, float* output, const int M,
+                             const int N) {
     const int idx = blockDim.x * blockIdx.x + threadIdx.x;
     if (idx < M) {
         const float* x = input + idx * N;
@@ -55,18 +55,27 @@ int main(int argc, char** argv) {
 
     switch (kernel) {
         case 1:
-            benchmark_kernel(relu_forward_kernel1, M * N / blockSize, blockSize,
-                             inputGPU, outputGPU, resFromGPU, M, N,
-                             &elapsedTime);
+            relu_kernel1<<<M * N / blockSize, blockSize>>>(inputGPU, outputGPU,
+                                                           M, N);
             break;
         default:
             printf("Error: Invalid kernel type: %i\n", kernel);
             return EXIT_FAILURE;
     }
+    cudaErrorCheck(cudaMemcpy(resFromGPU, outputGPU, M * N * sizeof(float),
+                              cudaMemcpyDeviceToHost));
+    cudaErrorCheck(cudaDeviceSynchronize());
 
     if (checkResults(output, resFromGPU, M * N)) {
+        switch (kernel) {
+            case 1:
+                benchmarkKernel(relu_kernel1, M * N / blockSize, blockSize,
+                                &elapsedTime, inputGPU, outputGPU, M, N);
+                break;
+        }
         printf(
-            "relu_forward kernel: %i | matrixSize: %i x %i | Times: %f ms | "
+            "softmax_forward kernel: %i | matrixSize: %i x %i | Times: "
+            "%f ms | "
             "blockSize: %i\n",
             kernel, M, N, elapsedTime, blockSize);
     }
