@@ -6,3 +6,4 @@ include_directories(./include)
 
 add_subdirectory(kernels/softmax)
 add_subdirectory(kernels/relu)
+add_subdirectory(kernels/gemm)

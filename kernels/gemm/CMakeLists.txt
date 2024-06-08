@@ -1,0 +1,1 @@
+add_executable(gemm_forward gemm_forward.cu)
