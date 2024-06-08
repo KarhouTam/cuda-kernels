@@ -15,13 +15,13 @@
 
 void initArrFloat(float* arr, const int N) {
     for (int i = 0; i < N; i++) {
-        arr[i] = (float)(rand() & 0xffff) / 1000.0f;
+        arr[i] = (float)rand() / (float)RAND_MAX;
     }
 }
 
 void initArrInt(int* arr, const int N) {
     for (int i = 0; i < N; i++) {
-        arr[i] = (rand() & 0xffff) / 1000;
+        arr[i] = rand() & 0x00ff;
     }
 }
 
