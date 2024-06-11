@@ -76,11 +76,80 @@ __global__ void gemm_kernel2(const float *A, const float *B, const float *C,
     }
 }
 
-constexpr unsigned int M = 2048;
+template <int blockSize, int stride, int step = blockSize * stride>
+__global__ void gemm_kernel3(const float *A, const float *B, const float *C,
+                             float *const D, const int M, const int N,
+                             const int K) {
+    // compares to kernel2, kernel3 let each thread handles (stride * stride)
+    // elements of D and results in less thread blocks
+    // but in fact kernel2 and kernel3's performance are closed but kernel3 meets bug when M * N > 512 * 512
+    // currently don't know why...
+    static_assert(stride > 0);
+    __shared__ float sharedA[step][step];
+    __shared__ float sharedB[step][step];
+    float vals[stride][stride];
+    for (int k = 0; k < K; k += step) {
+        for (int r = 0; r < stride; ++r) {
+            for (int c = 0; c < stride; ++c) {
+                int colOffset = blockSize * c + threadIdx.x;
+                int rowOffset = blockSize * r + threadIdx.y;
+                int row = r * gridDim.y * blockSize + blockIdx.y * blockSize +
+                          threadIdx.y;
+                int col = c * gridDim.x * blockSize + blockIdx.x * blockSize +
+                          threadIdx.x;
+                if (row < M && (k + colOffset) < K) {
+                    sharedA[rowOffset][colOffset] = A[row * K + k + colOffset];
+                } else {
+                    sharedA[rowOffset][colOffset] = 0.0f;
+                }
+
+                if ((k + rowOffset) < K && col < N) {
+                    sharedB[rowOffset][colOffset] =
+                        B[(k + rowOffset) * N + col];
+                } else {
+                    sharedB[rowOffset][colOffset] = 0.0f;
+                }
+            }
+        }
+        __syncthreads();
+        for (int r = 0; r < stride; ++r) {
+            for (int c = 0; c < stride; ++c) {
+                int colOffset = blockSize * c + threadIdx.x;
+                int rowOffset = blockSize * r + threadIdx.y;
+                int row = blockIdx.y * blockSize + r * gridDim.y * blockSize +
+                          threadIdx.y;
+                int col = blockIdx.x * blockSize + c * gridDim.x * blockSize +
+                          threadIdx.x;
+
+                if (row < M && col < N) {
+                    for (int i = 0; i < step; ++i) {
+                        vals[r][c] +=
+                            sharedA[rowOffset][i] * sharedB[i][colOffset];
+                    }
+                }
+                __syncthreads();
+            }
+        }
+    }
+    __syncthreads();
+    for (int r = 0; r < stride; ++r) {
+        for (int c = 0; c < stride; ++c) {
+            int row = r * gridDim.y * blockSize + blockIdx.y * blockSize +
+                      threadIdx.y;
+            int col = c * gridDim.x * blockSize + blockIdx.x * blockSize +
+                      threadIdx.x;
+            if (row < M && col < N)
+                D[row * N + col] = vals[r][c] + C[row * N + col];
+        }
+    }
+}
+
+constexpr unsigned int M = 512;
 constexpr unsigned int K = 512;
-constexpr unsigned int N = 2048;
-constexpr unsigned int BLOCK_SIZE = 256;
-constexpr unsigned int BLOCK_SIZE_KERNEL2 = 16;
+constexpr unsigned int N = 256;
+constexpr unsigned int BLOCK_SIZE_1D = 256;
+constexpr unsigned int BLOCK_SIZE_2D = 16;
+constexpr unsigned int STRIDE_KERNEL3 = 2;
 
 int main(int argc, char **argv) {
     if (argc < 2) {
@@ -89,7 +158,7 @@ int main(int argc, char **argv) {
     }
     int kernel = atoi(argv[1]);
 
-    unsigned int blockSize = BLOCK_SIZE;
+    unsigned int blockSize = BLOCK_SIZE_1D;
     if (argc > 2) {
         blockSize = atoi(argv[2]);
     }
@@ -128,11 +197,19 @@ int main(int argc, char **argv) {
                                                                DGPU, M, N, K);
             break;
         case 2: {
-            blockSize = BLOCK_SIZE_KERNEL2 * BLOCK_SIZE_KERNEL2;
-            dim3 blockDim(BLOCK_SIZE_KERNEL2, BLOCK_SIZE_KERNEL2);
-            dim3 gridDim(ceilDiv(N, BLOCK_SIZE_KERNEL2),
-                         ceilDiv(M, BLOCK_SIZE_KERNEL2));
-            gemm_kernel2<BLOCK_SIZE_KERNEL2>
+            blockSize = BLOCK_SIZE_2D * BLOCK_SIZE_2D;
+            dim3 blockDim(BLOCK_SIZE_2D, BLOCK_SIZE_2D);
+            dim3 gridDim(ceilDiv(N, BLOCK_SIZE_2D), ceilDiv(M, BLOCK_SIZE_2D));
+            gemm_kernel2<BLOCK_SIZE_2D>
+                <<<gridDim, blockDim>>>(AGPU, BGPU, CGPU, DGPU, M, N, K);
+            break;
+        }
+        case 3: {
+            blockSize = BLOCK_SIZE_2D * BLOCK_SIZE_2D;
+            dim3 blockDim(BLOCK_SIZE_2D, BLOCK_SIZE_2D);
+            dim3 gridDim(ceilDiv(N, BLOCK_SIZE_2D * STRIDE_KERNEL3),
+                         ceilDiv(M, BLOCK_SIZE_2D * STRIDE_KERNEL3));
+            gemm_kernel3<BLOCK_SIZE_2D, STRIDE_KERNEL3>
                 <<<gridDim, blockDim>>>(AGPU, BGPU, CGPU, DGPU, M, N, K);
             break;
         }
@@ -150,11 +227,19 @@ int main(int argc, char **argv) {
                                 &elapsedTime, AGPU, BGPU, CGPU, DGPU, M, N, K);
                 break;
             case 2:
-                benchmarkKernel(gemm_kernel2<BLOCK_SIZE_KERNEL2>,
-                                dim3(ceilDiv(N, BLOCK_SIZE_KERNEL2),
-                                     ceilDiv(M, BLOCK_SIZE_KERNEL2)),
-                                dim3(BLOCK_SIZE_KERNEL2, BLOCK_SIZE_KERNEL2),
-                                &elapsedTime, AGPU, BGPU, CGPU, DGPU, M, N, K);
+                benchmarkKernel(
+                    gemm_kernel2<BLOCK_SIZE_2D>,
+                    dim3(ceilDiv(N, BLOCK_SIZE_2D), ceilDiv(M, BLOCK_SIZE_2D)),
+                    dim3(BLOCK_SIZE_2D, BLOCK_SIZE_2D), &elapsedTime, AGPU,
+                    BGPU, CGPU, DGPU, M, N, K);
+                break;
+            case 3:
+                benchmarkKernel(
+                    gemm_kernel3<BLOCK_SIZE_2D, STRIDE_KERNEL3>,
+                    dim3(ceilDiv(N, BLOCK_SIZE_2D * STRIDE_KERNEL3),
+                         ceilDiv(M, BLOCK_SIZE_2D * STRIDE_KERNEL3)),
+                    dim3(BLOCK_SIZE_2D, BLOCK_SIZE_2D), &elapsedTime, AGPU,
+                    BGPU, CGPU, DGPU, M, N, K);
                 break;
             default:
                 printf("Error: Invalid kernel type: %i\n", kernel);
