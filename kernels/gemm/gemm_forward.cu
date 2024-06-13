@@ -1,5 +1,25 @@
 #include "common.h"
 
+/* GEMM (General Matrix Multiplication) forward implementation
+
+Formula: D = A * B + C, where A (M x K), B (K x N), C (M x N), D (M x N)
+
+Usage: ./gemm_forward <kernel>
+e.g. ./gemm_forward 1
+
+gemm_forward_cpu(): CPU implementation
+
+gemm_forward_kernel1(): Naive implementation on CUDA. Each thread handles
+one row of the input.
+
+gemm_forward_kernel2(): Used shared memory and matrix tiling.
+
+gemm_forward_kernel3(): On the base of kernel2, further let each thread handles
+computation of (stride * stride) elements of D. However, this kernel fucked up
+when M and N both larger than 512 (still don't know why).
+
+*/
+
 void gemm_cpu(const float *A, const float *B, const float *C, float *const D,
               const int M, const int N, const int K) {
     // D = A * B + C
@@ -82,8 +102,8 @@ __global__ void gemm_kernel3(const float *A, const float *B, const float *C,
                              const int K) {
     // compares to kernel2, kernel3 let each thread handles (stride * stride)
     // elements of D and results in less thread blocks
-    // but in fact kernel2 and kernel3's performance are closed but kernel3 meets bug when M * N > 512 * 512
-    // currently don't know why...
+    // but in fact kernel2 and kernel3's performance are closed but kernel3
+    // meets bug when M * N > 512 * 512 currently don't know why...
     static_assert(stride > 0);
     __shared__ float sharedA[step][step];
     __shared__ float sharedB[step][step];
@@ -224,22 +244,23 @@ int main(int argc, char **argv) {
         switch (kernel) {
             case 1:
                 benchmarkKernel(gemm_kernel1, ceilDiv(M, blockSize), blockSize,
-                                &elapsedTime, AGPU, BGPU, CGPU, DGPU, M, N, K);
+                                0, 0, &elapsedTime, AGPU, BGPU, CGPU, DGPU, M,
+                                N, K);
                 break;
             case 2:
                 benchmarkKernel(
                     gemm_kernel2<BLOCK_SIZE_2D>,
                     dim3(ceilDiv(N, BLOCK_SIZE_2D), ceilDiv(M, BLOCK_SIZE_2D)),
-                    dim3(BLOCK_SIZE_2D, BLOCK_SIZE_2D), &elapsedTime, AGPU,
-                    BGPU, CGPU, DGPU, M, N, K);
+                    dim3(BLOCK_SIZE_2D, BLOCK_SIZE_2D), 0, 0, &elapsedTime,
+                    AGPU, BGPU, CGPU, DGPU, M, N, K);
                 break;
             case 3:
                 benchmarkKernel(
                     gemm_kernel3<BLOCK_SIZE_2D, STRIDE_KERNEL3>,
                     dim3(ceilDiv(N, BLOCK_SIZE_2D * STRIDE_KERNEL3),
                          ceilDiv(M, BLOCK_SIZE_2D * STRIDE_KERNEL3)),
-                    dim3(BLOCK_SIZE_2D, BLOCK_SIZE_2D), &elapsedTime, AGPU,
-                    BGPU, CGPU, DGPU, M, N, K);
+                    dim3(BLOCK_SIZE_2D, BLOCK_SIZE_2D), 0, 0, &elapsedTime,
+                    AGPU, BGPU, CGPU, DGPU, M, N, K);
                 break;
             default:
                 printf("Error: Invalid kernel type: %i\n", kernel);

@@ -4,6 +4,24 @@
 
 #include "common.h"
 
+/* Softmax forward implementation
+
+Usage: ./softmax_forward <kernel> [blockSize]
+e.g. ./softmax_forward 1
+
+softmax_forward_cpu(): CPU implementation
+
+softmax_forward_kernel1(): Naive implementation on CUDA. Each thread handles
+one row of the input.
+
+softmax_forward_kernel2(): Optimized implementation on CUDA. Compares to
+kernel1, each warp (32 threads) handles one row.
+
+online_softmax_forward_kernel3(): Online softmax forward implementation on CUDA.
+Also each warp handles one row of the input.
+
+*/
+
 void softmax_cpu(float* input, float* output, const int M, const int N) {
     for (int m = 0; m < M; ++m) {
         float maxval = -INFINITY;
@@ -194,16 +212,16 @@ int main(int argc, char** argv) {
         switch (kernel) {
             case 1:
                 benchmarkKernel(softmax_kernel1, M * N / blockSize, blockSize,
-                                &elapsedTime, inputGPU, outputGPU, M, N);
+                                0, 0, &elapsedTime, inputGPU, outputGPU, M, N);
                 break;
             case 2:
                 benchmarkKernel(softmax_kernel2, ceilDiv(M * 32, blockSize),
-                                blockSize, &elapsedTime, inputGPU, outputGPU, M,
-                                N);
+                                blockSize, 0, 0, &elapsedTime, inputGPU,
+                                outputGPU, M, N);
                 break;
             case 3:
                 benchmarkKernel(online_softmax_kernel3,
-                                ceilDiv(M * 32, blockSize), blockSize,
+                                ceilDiv(M * 32, blockSize), blockSize, 0, 0,
                                 &elapsedTime, inputGPU, outputGPU, M, N);
                 break;
         }

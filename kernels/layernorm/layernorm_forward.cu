@@ -7,7 +7,7 @@
 
 /* Layer Normalization forward implementation
 
-Usage: ./layernorm_forward <kernel>
+Usage: ./layernorm_forward <kernel> [blockSize]
 e.g. ./layernorm_forward 1 
 
 layernorm_forward_cpu(): CPU implementation

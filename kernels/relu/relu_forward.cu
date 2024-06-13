@@ -2,7 +2,7 @@
 
 /* ReLU forward implementation
 
-Usage: ./relu_forward <kernel>
+Usage: ./relu_forward <kernel> [blockSize]
 e.g. ./relu_forward 1
 
 relu_forward_cpu(): CPU implementation
