@@ -1,6 +1,8 @@
 #include <cooperative_groups.h>
 #include <cooperative_groups/reduce.h>
 
+#include <cassert>
+
 #include "common.h"
 void layernorm_forward_cpu(float* input, float* out, float* weight, float* bias,
                            float eps, int B, int C, int K) {
@@ -137,9 +139,50 @@ __global__ void layernorm_forward_kernel3(float* input, float* out,
     }
 }
 
-#define B 1024
+__global__ void layernorm_forward_kernel4(float* input, float* out,
+                                          float* weight, float* bias, float eps,
+                                          int B, int C, int K) {
+    // one warp one row, plus using smem to store the shift (x - mean) values
+    // when K < 2048, the performance is better than kernel 2 and 3
+    assert((K % warpSize) == 0);
+    extern __shared__ float xShifts[];
+    int warpsPerBlock = blockDim.x / warpSize;
+    int warpId = threadIdx.x / warpSize;
+    int laneId = threadIdx.x % warpSize;
+    int numWarps = gridDim.x * warpsPerBlock;
+    float* const xShiftsThisWarp = xShifts + warpId * K;
+    for (int row = blockIdx.x * warpsPerBlock + warpId; row < B * C;
+         row += numWarps)
+        if (row < B * C) {
+            float* const x = input + row * K;
+            float* const y = out + row * K;
+            float partialSum = 0.0f;
+            for (int i = laneId; i < K; i += warpSize) {
+                xShiftsThisWarp[i] = x[i];
+                partialSum += x[i];
+            }
+
+            float sum = warpReduceSum(partialSum);
+            float mean = sum / K;
+
+            float var = 0.f;
+            for (int i = laneId; i < K; i += warpSize) {
+                xShiftsThisWarp[i] -= mean;
+                var += xShiftsThisWarp[i] * xShiftsThisWarp[i];
+            }
+
+            var = warpReduceSum(var);
+            float inv_std = 1.0f / sqrt(var / K + eps);
+
+            for (int i = laneId; i < K; i += warpSize) {
+                y[i] = weight[i] * xShiftsThisWarp[i] * inv_std + bias[i];
+            }
+        }
+}
+
+#define B 4096
 #define C 3
-#define K 2048
+#define K 1024
 #define EPS 1e-5
 #define BLOCK_SIZE 128
 
@@ -186,17 +229,24 @@ int main(int argc, char** argv) {
 
     switch (kernel) {
         case 1:
-            layernorm_forward_kernel1<<<B * C * K / blockSize, blockSize>>>(
+            layernorm_forward_kernel1<<<B * C / blockSize, blockSize>>>(
                 inputGPU, outputGPU, weightGPU, biasGPU, EPS, B, C, K);
             break;
         case 2:
-            layernorm_forward_kernel2<<<B * C * K / blockSize, blockSize>>>(
+            layernorm_forward_kernel2<<<B * C * 32 / blockSize, blockSize>>>(
                 inputGPU, outputGPU, weightGPU, biasGPU, EPS, B, C, K);
             break;
         case 3:
-            layernorm_forward_kernel3<<<B * C * K / blockSize, blockSize>>>(
+            layernorm_forward_kernel3<<<B * C * 32 / blockSize, blockSize>>>(
                 inputGPU, outputGPU, weightGPU, biasGPU, EPS, B, C, K);
             break;
+        case 4: {
+            int smemSize = K * sizeof(float) * (blockSize / 32);
+            layernorm_forward_kernel4<<<B * C * 32 / blockSize, blockSize,
+                                        smemSize>>>(
+                inputGPU, outputGPU, weightGPU, biasGPU, EPS, B, C, K);
+            break;
+        }
         default:
             printf("Error: Invalid kernel type: %i\n", kernel);
             return EXIT_FAILURE;
@@ -209,18 +259,25 @@ int main(int argc, char** argv) {
         switch (kernel) {
             case 1:
                 benchmarkKernel(layernorm_forward_kernel1, B * C / blockSize,
-                                blockSize, &elapsedTime, inputGPU, outputGPU,
-                                weightGPU, biasGPU, EPS, B, C, K);
+                                blockSize, 0, 0, &elapsedTime, inputGPU,
+                                outputGPU, weightGPU, biasGPU, EPS, B, C, K);
                 break;
             case 2:
                 benchmarkKernel(layernorm_forward_kernel2,
-                                ceilDiv(B * C * 32, blockSize), blockSize,
+                                ceilDiv(B * C * 32, blockSize), blockSize, 0, 0,
                                 &elapsedTime, inputGPU, outputGPU, weightGPU,
                                 biasGPU, EPS, B, C, K);
                 break;
             case 3:
                 benchmarkKernel(layernorm_forward_kernel3,
+                                ceilDiv(B * C * 32, blockSize), blockSize, 0, 0,
+                                &elapsedTime, inputGPU, outputGPU, weightGPU,
+                                biasGPU, EPS, B, C, K);
+                break;
+            case 4:
+                benchmarkKernel(layernorm_forward_kernel4,
                                 ceilDiv(B * C * 32, blockSize), blockSize,
+                                K * sizeof(float) * (blockSize / 32), 0,
                                 &elapsedTime, inputGPU, outputGPU, weightGPU,
                                 biasGPU, EPS, B, C, K);
                 break;
