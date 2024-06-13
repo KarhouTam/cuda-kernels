@@ -1,5 +1,7 @@
-#include "common.h"
+#include <cooperative_groups.h>
+#include <cooperative_groups/reduce.h>
 
+#include "common.h"
 void layernorm_forward_cpu(float* input, float* out, float* weight, float* bias,
                            float eps, int B, int C, int K) {
     // In normal, the input data has shape [B, C, K], B is batch size, C is
@@ -93,6 +95,48 @@ __global__ void layernorm_forward_kernel2(float* input, float* out,
         }
 }
 
+__global__ void layernorm_forward_kernel3(float* input, float* out,
+                                          float* weight, float* bias, float eps,
+                                          int B, int C, int K) {
+    // compares to kernel2, use cooperative groups (just for practice)
+    // performance is very close to kernel 2
+    namespace cg = cooperative_groups;
+    cg::thread_block thisBlock = cg::this_thread_block();
+    cg::thread_block_tile<32> thisWarp = cg::tiled_partition<32>(thisBlock);
+    int warpId = thisWarp.meta_group_rank();
+    int warpsPerBlock = thisWarp.meta_group_size();
+    int laneId = thisWarp.thread_rank();
+    int numWarps = gridDim.x * warpsPerBlock;
+    for (int row = blockIdx.x * warpsPerBlock + warpId; row < B * C;
+         row += numWarps) {
+        float* const x = input + row * K;
+        float* const y = out + row * K;
+        float sum = 0.0f;
+
+        for (int i = laneId; i < K; i += thisWarp.num_threads()) {
+            sum += x[i];
+        }
+
+        sum = cg::reduce(thisWarp, sum, plus<float>);
+
+        float mean = sum / K;
+        float var = 0.f;
+
+        for (int i = laneId; i < K; i += thisWarp.num_threads()) {
+            float xShift = x[i] - mean;
+            var += xShift * xShift;
+        }
+
+        var = cg::reduce(thisWarp, var, plus<float>);
+
+        float inv_std = 1.0f / sqrt(var / K + eps);
+
+        for (int i = laneId; i < K; i += thisWarp.num_threads()) {
+            y[i] = weight[i] * (x[i] - mean) * inv_std + bias[i];
+        }
+    }
+}
+
 #define B 1024
 #define C 3
 #define K 2048
@@ -149,6 +193,10 @@ int main(int argc, char** argv) {
             layernorm_forward_kernel2<<<B * C * K / blockSize, blockSize>>>(
                 inputGPU, outputGPU, weightGPU, biasGPU, EPS, B, C, K);
             break;
+        case 3:
+            layernorm_forward_kernel3<<<B * C * K / blockSize, blockSize>>>(
+                inputGPU, outputGPU, weightGPU, biasGPU, EPS, B, C, K);
+            break;
         default:
             printf("Error: Invalid kernel type: %i\n", kernel);
             return EXIT_FAILURE;
@@ -166,6 +214,12 @@ int main(int argc, char** argv) {
                 break;
             case 2:
                 benchmarkKernel(layernorm_forward_kernel2,
+                                ceilDiv(B * C * 32, blockSize), blockSize,
+                                &elapsedTime, inputGPU, outputGPU, weightGPU,
+                                biasGPU, EPS, B, C, K);
+                break;
+            case 3:
+                benchmarkKernel(layernorm_forward_kernel3,
                                 ceilDiv(B * C * 32, blockSize), blockSize,
                                 &elapsedTime, inputGPU, outputGPU, weightGPU,
                                 biasGPU, EPS, B, C, K);
