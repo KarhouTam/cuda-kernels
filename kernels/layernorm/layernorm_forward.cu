@@ -4,6 +4,28 @@
 #include <cassert>
 
 #include "common.h"
+
+/* Layer Normalization forward implementation
+
+Usage: ./layernorm_forward <kernel>
+e.g. ./layernorm_forward 1 
+
+layernorm_forward_cpu(): CPU implementation
+
+layernorm_forward_kernel1(): Naive implementation on CUDA. Each thread handles
+one row of the input.
+
+layernorm_forward_kernel2(): Optimized implementation on CUDA. Compares to
+kernel1, each warp (32 threads) handles one row.
+
+layernorm_forward_kernel3(): Similar to kernel2, each warp handles one row, but
+uses CUDA's cooperative groups instead.
+
+layernorm_forward_kernel4(): On the base of kernel2, plus using shared memory to
+store the intermediate shift values (x - mean).
+
+*/
+
 void layernorm_forward_cpu(float* input, float* out, float* weight, float* bias,
                            float eps, int B, int C, int K) {
     // In normal, the input data has shape [B, C, K], B is batch size, C is
