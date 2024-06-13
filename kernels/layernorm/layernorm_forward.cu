@@ -8,7 +8,7 @@
 /* Layer Normalization forward implementation
 
 Usage: ./layernorm_forward <kernel> [blockSize]
-e.g. ./layernorm_forward 1 
+e.g. ./layernorm_forward 1
 
 layernorm_forward_cpu(): CPU implementation
 
@@ -23,6 +23,9 @@ uses CUDA's cooperative groups instead.
 
 layernorm_forward_kernel4(): On the base of kernel2, plus using shared memory to
 store the intermediate shift values (x - mean).
+
+layernorm_forward_kernel5(): On the base of kernel2, using formula D(X) = E(X^2)
+- E(X)^2 to reduce the number of loops.
 
 */
 
@@ -202,6 +205,39 @@ __global__ void layernorm_forward_kernel4(float* input, float* out,
         }
 }
 
+__global__ void layernorm_forward_kernel5(float* input, float* out,
+                                          float* weight, float* bias, float eps,
+                                          int B, int C, int K) {
+    // using formula D(X) = E(X^2) - E(X)^2 to reduce the number of loops
+    int warpsPerBlock = blockDim.x / warpSize;
+    int warpId = threadIdx.x / warpSize;
+    int laneId = threadIdx.x % warpSize;
+    int numWarps = gridDim.x * warpsPerBlock;
+    for (int row = blockIdx.x * warpsPerBlock + warpId; row < B * C;
+         row += numWarps)
+        if (row < B * C) {
+            float* const x = input + row * K;
+            float* const y = out + row * K;
+            float partialSum = 0.0f;
+            float partialSum2 = 0.0f;
+            for (int i = laneId; i < K; i += warpSize) {
+                float xi = x[i];
+                partialSum += xi;
+                partialSum2 += xi * xi;
+            }
+
+            float mean = warpReduceSum(partialSum) / K;
+            float mean2 = warpReduceSum(partialSum2) / K;
+
+            float var = (mean2 - mean * mean);
+            float inv_std = rsqrtf(var + eps);
+
+            for (int i = laneId; i < K; i += warpSize) {
+                y[i] = weight[i] * (x[i] - mean) * inv_std + bias[i];
+            }
+        }
+}
+
 #define B 4096
 #define C 3
 #define K 1024
@@ -269,6 +305,10 @@ int main(int argc, char** argv) {
                 inputGPU, outputGPU, weightGPU, biasGPU, EPS, B, C, K);
             break;
         }
+        case 5:
+            layernorm_forward_kernel5<<<B * C * 32 / blockSize, blockSize>>>(
+                inputGPU, outputGPU, weightGPU, biasGPU, EPS, B, C, K);
+            break;
         default:
             printf("Error: Invalid kernel type: %i\n", kernel);
             return EXIT_FAILURE;
@@ -300,6 +340,12 @@ int main(int argc, char** argv) {
                 benchmarkKernel(layernorm_forward_kernel4,
                                 ceilDiv(B * C * 32, blockSize), blockSize,
                                 K * sizeof(float) * (blockSize / 32), 0,
+                                &elapsedTime, inputGPU, outputGPU, weightGPU,
+                                biasGPU, EPS, B, C, K);
+                break;
+            case 5:
+                benchmarkKernel(layernorm_forward_kernel5,
+                                ceilDiv(B * C * 32, blockSize), blockSize, 0, 0,
                                 &elapsedTime, inputGPU, outputGPU, weightGPU,
                                 biasGPU, EPS, B, C, K);
                 break;
