@@ -7,5 +7,6 @@ Some records of personal CUDA kernel implementations. These implementations are 
 - Softmax
 - ReLU
 - GEMM
+- LayerNorm
 
 More kernels are coming...
