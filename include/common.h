@@ -12,34 +12,54 @@
         fprintf(stderr, "Error: %s\n", cudaGetErrorString(err));      \
         exit(EXIT_FAILURE);                                           \
     }
-
+#define cublasErrorCheck(err)                                        \
+    if (err != CUBLAS_STATUS_SUCCESS) {                              \
+        fprintf(stderr, "cublas error %d at %s:%d\n", err, __FILE__, \
+                __LINE__);                                           \
+        exit(EXIT_FAILURE);                                          \
+    }
 // inspired by llm.c
 // Use Package128 to store 128 bits and urge GPU to load it in one time
 template <typename T>
-struct Package128 {
-    constexpr static int size = 16 / sizeof(T);
+struct __align__(16) Package128 {
+    static constexpr const int size = 16 / sizeof(T);
     T data[size];
-    explicit Package128(int4& seq) { load(seq); }
-
-    T& operator[](int idx) { return data[idx]; }
-
-    const T& operator[](int idx) const { return data[idx]; }
-
-    void constant(T val) {
-        for (int i = 0; i < size; i++) {
-            data[i] = val;
-        }
-    }
-    void zeros() { constant(0); }
-    void ones() { constant(1); }
-
-    void load(T& seq) {
+    Package128() = default;
+    __device__ explicit Package128(int4 bits) {
         static_assert(16 == sizeof(T) * size);
-        memcpy(data, reinterpret_cast<int4*>(&seq), 128);
+        memcpy(&data, &bits, 128);
     }
 
-    int4& getData() { return *reinterpret_cast<int4*>(data); }
+    __device__ T& operator[](int idx) { return data[idx]; }
+
+    __device__ const T& operator[](int idx) const { return data[idx]; }
+
+    __device__ static Package128<T> constant(T & val) {
+        Package128<T> results;
+        for (int i = 0; i < size; i++) {
+            results[i] = val;
+        }
+        return results;
+    }
+    __device__ static Package128<T> zeros() { return constant(0); }
+    __device__ static Package128<T> ones() { return constant(1); }
+    __device__ int4 getBits() {
+        int4 bits;
+        static_assert(sizeof(int4) == sizeof(T) * size);
+        memcpy(&bits, &data, sizeof(bits));
+        return bits;
+    }
 };
+
+template <typename T>
+__device__ inline Package128<T> load128(const T* address) {
+    return Package128<T>{*reinterpret_cast<const int4*>(address)};
+}
+
+template <typename T>
+__device__ void inline store128(T* address, Package128<T> val) {
+    *reinterpret_cast<int4*>(address) = val.getBits();
+}
 
 void initArrFloat(float* arr, const int N) {
     // -1.0 ~ 1.0
