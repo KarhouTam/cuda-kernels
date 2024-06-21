@@ -89,6 +89,7 @@ bool checkResults(float* resCPU, float* resFromGPU, const int N) {
 
 template <typename T>
 __device__ float warpReduceMax(T val) {
+#pragma unroll
     for (int offset = warpSize / 2; offset > 0; offset >>= 1) {
         val = fmaxf(val, __shfl_xor_sync(0xFFFFFFFF, val, offset));
     }
@@ -97,6 +98,7 @@ __device__ float warpReduceMax(T val) {
 
 template <typename T>
 __device__ float warpReduceSum(T val) {
+#pragma unroll
     for (int offset = warpSize / 2; offset > 0; offset >>= 1) {
         val += __shfl_xor_sync(0xFFFFFFFF, val, offset);
     }

@@ -20,6 +20,11 @@ kernel1, each warp (32 threads) handles one row.
 online_softmax_forward_kernel3(): Online softmax forward implementation on CUDA.
 Also each warp handles one row of the input.
 
+(Fastest)
+softmax_forward_kernel4(): Online softmax forward implementation on CUDA.
+Each warp handles one row of the input.
+Use float4 to acclerate memory access.
+
 */
 
 void softmax_cpu(float* input, float* output, const int M, const int N) {
@@ -157,8 +162,62 @@ __global__ void online_softmax_kernel3(float* input, float* output, const int M,
     }
 }
 
+__global__ void online_softmax_kernel4(float* __restrict__ input,
+                                       float* __restrict__ output, const int M,
+                                       const int N) {
+    // this kernel is f*cking faster than any other kernels!
+    // use float4 to acclerate memory access
+    // each warp (32 threads) handles one row
+    using f128 = Package128<float>;
+    const int tid = threadIdx.x;
+    const int warpId = tid / warpSize;
+    const int laneId = tid % warpSize;
+    const int warpsPerBlock = blockDim.x / warpSize;
+    int row = warpsPerBlock * blockIdx.x + warpId;
+    if (row < M) {
+        float* x = input + row * N;
+        float* y = output + row * N;
+        float laneMax = -INFINITY, laneSum = 0.0f;
+        for (int i = laneId * f128::size; i < N; i += warpSize * f128::size) {
+            f128 xi = load128(x + i);
+            float packMax = -INFINITY, packSum = 0.0f;
+#pragma unroll
+            for (int k = 0; k < f128::size; ++k) {
+                float newPackMax = fmaxf(packMax, xi[k]);
+                packSum = expf(packMax - newPackMax) * packSum +
+                          expf(xi[k] - newPackMax);
+                packMax = newPackMax;
+            }
+            float newLaneMax = fmaxf(laneMax, packMax);
+            laneSum = laneSum * expf(laneMax - newLaneMax) +
+                      packSum * expf(packMax - newLaneMax);
+            laneMax = newLaneMax;
+        }
+
+        float maxVal = laneMax, sumVal = laneSum;
+        for (int offset = warpSize / 2; offset > 0; offset >>= 1) {
+            float offsetMax = __shfl_xor_sync(0xFFFFFFFF, maxVal, offset);
+            float offsetSum = __shfl_xor_sync(0xFFFFFFFF, sumVal, offset);
+            if (maxVal > offsetMax) {
+                sumVal += expf(offsetMax - maxVal) * offsetSum;
+            } else {
+                sumVal = sumVal * expf(maxVal - offsetMax) + offsetSum;
+                maxVal = offsetMax;
+            }
+        }
+        for (int i = laneId * f128::size; i < N; i += warpSize * f128::size) {
+            f128 out;
+            f128 xi = load128(x + i);
+#pragma unroll
+            for (int k = 0; k < f128::size; ++k) {
+                out[k] = expf(xi[k] - maxVal) / sumVal;
+            }
+            store128(y + i, out);
+        }
+    }
+}
 #define M 8196
-#define N 8196
+#define N 768
 #define BLOCK_SIZE 128
 
 int main(int argc, char** argv) {
@@ -196,17 +255,24 @@ int main(int argc, char** argv) {
             softmax_kernel2<<<ceilDiv(M * 32, blockSize), blockSize>>>(
                 inputGPU, outputGPU, M, N);
             break;
+
         case 3:
             online_softmax_kernel3<<<ceilDiv(M * 32, blockSize), blockSize>>>(
                 inputGPU, outputGPU, M, N);
             break;
+
+        case 4:
+            online_softmax_kernel4<<<ceilDiv(M * 32, blockSize), blockSize,
+                                     0>>>(inputGPU, outputGPU, M, N);
+            break;
+
         default:
             printf("Error: Invalid kernel type: %i\n", kernel);
             return EXIT_FAILURE;
     }
+    cudaErrorCheck(cudaDeviceSynchronize());
     cudaErrorCheck(cudaMemcpy(resFromGPU, outputGPU, M * N * sizeof(float),
                               cudaMemcpyDeviceToHost));
-    cudaErrorCheck(cudaDeviceSynchronize());
 
     if (checkResults(output, resFromGPU, M * N)) {
         switch (kernel) {
@@ -221,6 +287,11 @@ int main(int argc, char** argv) {
                 break;
             case 3:
                 benchmarkKernel(online_softmax_kernel3,
+                                ceilDiv(M * 32, blockSize), blockSize, 0, 0,
+                                &elapsedTime, inputGPU, outputGPU, M, N);
+                break;
+            case 4:
+                benchmarkKernel(online_softmax_kernel4,
                                 ceilDiv(M * 32, blockSize), blockSize, 0, 0,
                                 &elapsedTime, inputGPU, outputGPU, M, N);
                 break;
