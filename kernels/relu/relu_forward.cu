@@ -56,6 +56,34 @@ __global__ void relu_forward_kernel2(float* input, float* output, int M,
         }
 }
 
+__global__ void relu_forward_kernel3(float* input, float* output, int M,
+                                     int N) {
+    // each warp handles one row of the input
+    // use floar4 to acclerate memory accessing
+    // but seems improvement is not significant
+    using f128 = Package128<float>;
+    int warpsPerBlock = blockDim.x / warpSize;
+    int warpId = threadIdx.x / warpSize;
+    int laneId = threadIdx.x % warpSize;
+    int numWarps = gridDim.x * warpsPerBlock;
+    for (int row = blockIdx.x * warpsPerBlock + warpId; row < M;
+         row += numWarps)
+        if (row < M) {
+            float* const x = input + row * N;
+            float* const y = output + row * N;
+
+            for (int i = laneId * f128::size; i < N; i += warpSize * f128::size) {
+                f128 packedX = load128(x + i);
+                f128 out;
+                #pragma unroll
+                for (int k = 0; k < f128::size; ++k) {
+                    out[k] = packedX[k] > 0 ? packedX[k] : 0.0f;
+                }
+                store128(y + i, out);
+            }
+        }
+}
+
 #define M 8196
 #define N 8196
 #define BLOCK_SIZE 128
@@ -96,6 +124,10 @@ int main(int argc, char** argv) {
             relu_forward_kernel2<<<M * N / blockSize, blockSize>>>(
                 inputGPU, outputGPU, M, N);
             break;
+        case 3:
+            relu_forward_kernel3<<<M * N / blockSize, blockSize>>>(
+                inputGPU, outputGPU, M, N);
+            break;
         default:
             printf("Error: Invalid kernel type: %i\n", kernel);
             return EXIT_FAILURE;
@@ -113,6 +145,11 @@ int main(int argc, char** argv) {
                 break;
             case 2:
                 benchmarkKernel(relu_forward_kernel2, M * N / blockSize,
+                                blockSize, 0, 0, &elapsedTime, inputGPU,
+                                outputGPU, M, N);
+                break;
+            case 3:
+                benchmarkKernel(relu_forward_kernel3, M * N / blockSize,
                                 blockSize, 0, 0, &elapsedTime, inputGPU,
                                 outputGPU, M, N);
                 break;

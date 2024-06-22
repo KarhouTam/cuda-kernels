@@ -217,7 +217,7 @@ __global__ void online_softmax_kernel4(float* __restrict__ input,
     }
 }
 #define M 8196
-#define N 768
+#define N 8196
 #define BLOCK_SIZE 128
 
 int main(int argc, char** argv) {
