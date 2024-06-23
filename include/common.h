@@ -22,10 +22,10 @@
 // Use Package128 to store 128 bits and urge GPU to load it in one time
 template <typename T>
 struct __align__(16) Package128 {
-    static constexpr const int size = 16 / sizeof(T);
+    static constexpr const int size = sizeof(float4) / sizeof(T);
     T data[size];
     Package128() = default;
-    __device__ explicit Package128(int4 bits) {
+    __device__ explicit Package128(float4 bits) {
         static_assert(16 == sizeof(T) * size);
         memcpy(&data, &bits, 128);
     }
@@ -43,9 +43,9 @@ struct __align__(16) Package128 {
     }
     __device__ static Package128<T> zeros() { return constant(0); }
     __device__ static Package128<T> ones() { return constant(1); }
-    __device__ int4 getBits() {
-        int4 bits;
-        static_assert(sizeof(int4) == sizeof(T) * size);
+    __device__ float4 getBits() {
+        float4 bits;
+        static_assert(sizeof(float4) == sizeof(T) * size);
         memcpy(&bits, &data, sizeof(bits));
         return bits;
     }
@@ -53,12 +53,22 @@ struct __align__(16) Package128 {
 
 template <typename T>
 __device__ inline Package128<T> load128(const T* address) {
-    return Package128<T>{*reinterpret_cast<const int4*>(address)};
+    return Package128<T>{*reinterpret_cast<const float4*>(address)};
+}
+
+template <typename T>
+__device__ inline Package128<T> load128cs(const T* address) {
+    return Package128<T>{__ldcs(reinterpret_cast<const float4*>(address))};
 }
 
 template <typename T>
 __device__ void inline store128(T* address, Package128<T> val) {
-    *reinterpret_cast<int4*>(address) = val.getBits();
+    *reinterpret_cast<float4*>(address) = val.getBits();
+}
+
+template <typename T>
+__device__ void inline store128cs(T* address, Package128<T> val) {
+    __stcs(reinterpret_cast<float4*>(address), val.getBits());
 }
 
 void initArrFloat(float* arr, const int N) {

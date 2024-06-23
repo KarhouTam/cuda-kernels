@@ -179,9 +179,9 @@ __global__ void online_softmax_kernel4(float* __restrict__ input,
         float* y = output + row * N;
         float laneMax = -INFINITY, laneSum = 0.0f;
         for (int i = laneId * f128::size; i < N; i += warpSize * f128::size) {
-            f128 xi = load128(x + i);
+            f128 xi = load128cs(x + i);
             float packMax = -INFINITY, packSum = 0.0f;
-#pragma unroll
+            #pragma unroll
             for (int k = 0; k < f128::size; ++k) {
                 float newPackMax = fmaxf(packMax, xi[k]);
                 packSum = expf(packMax - newPackMax) * packSum +
@@ -207,12 +207,12 @@ __global__ void online_softmax_kernel4(float* __restrict__ input,
         }
         for (int i = laneId * f128::size; i < N; i += warpSize * f128::size) {
             f128 out;
-            f128 xi = load128(x + i);
-#pragma unroll
+            f128 xi = load128cs(x + i);
+            #pragma unroll
             for (int k = 0; k < f128::size; ++k) {
                 out[k] = expf(xi[k] - maxVal) / sumVal;
             }
-            store128(y + i, out);
+            store128cs(y + i, out);
         }
     }
 }
@@ -243,7 +243,6 @@ int main(int argc, char** argv) {
                               cudaMemcpyHostToDevice));
     cudaErrorCheck(cudaMalloc(&outputGPU, M * N * sizeof(float)));
 
-    float elapsedTime;
     online_softmax_cpu(input, output, M, N);
 
     switch (kernel) {
@@ -274,6 +273,7 @@ int main(int argc, char** argv) {
     cudaErrorCheck(cudaMemcpy(resFromGPU, outputGPU, M * N * sizeof(float),
                               cudaMemcpyDeviceToHost));
 
+    float elapsedTime;
     if (checkResults(output, resFromGPU, M * N)) {
         switch (kernel) {
             case 1:
