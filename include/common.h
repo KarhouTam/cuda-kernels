@@ -34,15 +34,15 @@ struct __align__(16) Package128 {
 
     __device__ const T& operator[](int idx) const { return data[idx]; }
 
-    __device__ static Package128<T> constant(T & val) {
+    __device__ static Package128<T> constant(T val) {
         Package128<T> results;
         for (int i = 0; i < size; i++) {
             results[i] = val;
         }
         return results;
     }
-    __device__ static Package128<T> zeros() { return constant(0); }
-    __device__ static Package128<T> ones() { return constant(1); }
+    __device__ static Package128<T> zeros() { return constant((T)0); }
+    __device__ static Package128<T> ones() { return constant((T)1); }
     __device__ float4 getBits() {
         float4 bits;
         static_assert(sizeof(float4) == sizeof(T) * size);
