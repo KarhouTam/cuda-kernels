@@ -35,8 +35,8 @@ layernorm_forward_kernel7(): on the base of kernel 6, plus using float4.
 
 void layernorm_forward_cpu(float *input, float *out, float *weight, float *bias,
                            float eps, int B, int T, int C) {
-    // In normal, the input data has shape [B, C, K], B is batch size, C is
-    // number of channels, K is sequence length
+    // In normal, the input data has shape [B, T, C], B is batch size, T is sequence
+    // length, C is token length
     for (int row = 0; row < B * T; ++row) {
         float *const x = input + row * C;
         float *const y = out + row * C;
@@ -166,7 +166,6 @@ __global__ void layernorm_forward_kernel3(float *input, float *out, float *weigh
 __global__ void layernorm_forward_kernel4(float *input, float *out, float *weight,
                                           float *bias, float eps, int B, int T, int C) {
     // one warp one row, plus using smem to store the shift (x - mean) values
-    // when K < 2048, the performance is better than kernel 2 and 3
     assert((C % warpSize) == 0);
     extern __shared__ float xShifts[];
     int warpsPerBlock = blockDim.x / warpSize;
@@ -234,8 +233,9 @@ __global__ void layernorm_forward_kernel5(float *input, float *out, float *weigh
 
 __global__ void layernorm_forward_kernel6(float *input, float *out, float *weight,
                                           float *bias, float eps, int B, int T, int C) {
-    // one warp one row, plus using smem to store the shift (x - mean) values
-    // when K < 2048, the performance is better than kernel 2 and 3
+    // one warp one row
+    // use smem to store the shift (x - mean) values
+    // use D(X) = E(X^2) - E(X)^2
     assert((C % warpSize) == 0);
     extern __shared__ float sharedX[];
     int warpsPerBlock = blockDim.x / warpSize;
