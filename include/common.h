@@ -12,11 +12,10 @@
         fprintf(stderr, "Error: %s\n", cudaGetErrorString(err));      \
         exit(EXIT_FAILURE);                                           \
     }
-#define cublasErrorCheck(err)                                        \
-    if (err != CUBLAS_STATUS_SUCCESS) {                              \
-        fprintf(stderr, "cublas error %d at %s:%d\n", err, __FILE__, \
-                __LINE__);                                           \
-        exit(EXIT_FAILURE);                                          \
+#define cublasErrorCheck(err)                                                   \
+    if (err != CUBLAS_STATUS_SUCCESS) {                                         \
+        fprintf(stderr, "cublas error %d at %s:%d\n", err, __FILE__, __LINE__); \
+        exit(EXIT_FAILURE);                                                     \
     }
 // inspired by llm.c
 // Use Package128 to store 128 bits and urge GPU to load it in one time
@@ -71,6 +70,23 @@ __device__ void inline store128cs(T* address, Package128<T> val) {
     __stcs(reinterpret_cast<float4*>(address), val.getBits());
 }
 
+template <typename T>
+void constant(T* arr, const int N, T val) {
+    for (int i = 0; i < N; ++i) {
+        arr[i] = val;
+    }
+}
+
+template <typename T>
+void ones(T* arr, const int N) {
+    constant(arr, N, (T)1);
+}
+
+template <typename T>
+void zeros(T* arr, const int N) {
+    constant(arr, N, (T)1);
+}
+
 void initArrFloat(float* arr, const int N) {
     // -1.0 ~ 1.0
     // copied from llm.c
@@ -89,8 +105,8 @@ bool checkResults(float* resCPU, float* resFromGPU, const int N) {
     float tolerance = 1e-4f;
     for (int i = 0; i < N; i++) {
         if (abs(resFromGPU[i] - resCPU[i]) > tolerance) {
-            printf("checkResultsError: %f != %f, index: %i\n", resCPU[i],
-                   resFromGPU[i], i);
+            printf("checkResultsError: %f != %f, index: %i\n", resCPU[i], resFromGPU[i],
+                   i);
             return false;
         }
     }
@@ -122,9 +138,8 @@ __host__ __device__ inline float ceilDiv(T dividend, T divisor) {
 
 template <typename Kernel, typename... Args>
 void benchmarkKernel(int repeatTimes, Kernel kernel, const dim3 gridDim,
-                     const dim3 blockDim, unsigned int smemSize,
-                     CUstream_st* stream, float* totalElapsedTime,
-                     Args&&... args) {
+                     const dim3 blockDim, unsigned int smemSize, CUstream_st* stream,
+                     float* totalElapsedTime, Args&&... args) {
     cudaEvent_t begin, end;
     cudaErrorCheck(cudaEventCreate(&begin));
     cudaErrorCheck(cudaEventCreate(&end));
@@ -132,8 +147,7 @@ void benchmarkKernel(int repeatTimes, Kernel kernel, const dim3 gridDim,
     for (int i = 0; i < repeatTimes; ++i) {
         elapsedTime = 0.0f;
         cudaEventRecord(begin);
-        kernel<<<gridDim, blockDim, smemSize, stream>>>(
-            std::forward<Args>(args)...);
+        kernel<<<gridDim, blockDim, smemSize, stream>>>(std::forward<Args>(args)...);
         cudaEventRecord(end);
         cudaErrorCheck(cudaEventSynchronize(begin));
         cudaErrorCheck(cudaEventSynchronize(end));
@@ -164,12 +178,10 @@ __device__ __forceinline__ T divide(const T& a, const T& b) {
 
 template <typename Kernel, typename... Args>
 void benchmarkKernel(int repeatTimes, Kernel kernel, const int gridSize,
-                     const int blockSize, unsigned int smemSize,
-                     CUstream_st* stream, float* totalElapsedTime,
-                     Args&&... args) {
-    benchmarkKernel(repeatTimes, kernel, dim3(gridSize), dim3(blockSize),
-                    smemSize, stream, totalElapsedTime,
-                    std::forward<Args>(args)...);
+                     const int blockSize, unsigned int smemSize, CUstream_st* stream,
+                     float* totalElapsedTime, Args&&... args) {
+    benchmarkKernel(repeatTimes, kernel, dim3(gridSize), dim3(blockSize), smemSize,
+                    stream, totalElapsedTime, std::forward<Args>(args)...);
 }
 
 #endif
