@@ -173,14 +173,14 @@ __global__ void layernorm_forward_kernel4(float *input, float *out, float *weigh
     int warpId = threadIdx.x / warpSize;
     int laneId = threadIdx.x % warpSize;
     int numWarps = gridDim.x * warpsPerBlock;
-    float *const xShiftsThisWarp = xShifts + warpId * C;
+    float *const xShiftsWarp = xShifts + warpId * C;
     for (int row = blockIdx.x * warpsPerBlock + warpId; row < B * T; row += numWarps)
         if (row < B * T) {
             float *const x = input + row * C;
             float *const y = out + row * C;
             float partialSum = 0.0f;
             for (int i = laneId; i < C; i += warpSize) {
-                xShiftsThisWarp[i] = x[i];
+                xShiftsWarp[i] = x[i];
                 partialSum += x[i];
             }
 
@@ -189,15 +189,15 @@ __global__ void layernorm_forward_kernel4(float *input, float *out, float *weigh
 
             float var = 0.f;
             for (int i = laneId; i < C; i += warpSize) {
-                xShiftsThisWarp[i] -= mean;
-                var += xShiftsThisWarp[i] * xShiftsThisWarp[i];
+                xShiftsWarp[i] -= mean;
+                var += xShiftsWarp[i] * xShiftsWarp[i];
             }
 
             var = warpReduceSum(var);
             float inv_std = 1.0f / sqrt(var / C + eps);
 
             for (int i = laneId; i < C; i += warpSize) {
-                y[i] = weight[i] * xShiftsThisWarp[i] * inv_std + bias[i];
+                y[i] = weight[i] * xShiftsWarp[i] * inv_std + bias[i];
             }
         }
 }
