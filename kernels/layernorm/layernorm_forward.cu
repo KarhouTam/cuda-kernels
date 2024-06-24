@@ -27,104 +27,104 @@ store the intermediate shift values (x - mean).
 layernorm_forward_kernel5(): On the base of kernel2, using formula D(X) = E(X^2)
 - E(X)^2 to reduce the number of loops.
 
+layernorm_forward_kernel6(): use D(X) = E(X^2) and smem to acclerate memory access.
+
+layernorm_forward_kernel7(): on the base of kernel 6, plus using float4.
+
 */
 
 void layernorm_forward_cpu(float *input, float *out, float *weight, float *bias,
-                           float eps, int B, int C, int K) {
+                           float eps, int B, int T, int C) {
     // In normal, the input data has shape [B, C, K], B is batch size, C is
     // number of channels, K is sequence length
-    for (int row = 0; row < B * C; ++row) {
-        float *const x = input + row * K;
-        float *const y = out + row * K;
+    for (int row = 0; row < B * T; ++row) {
+        float *const x = input + row * C;
+        float *const y = out + row * C;
         // mean
         float mean = 0.0f;
-        for (int i = 0; i < K; ++i) {
+        for (int i = 0; i < C; ++i) {
             mean += x[i];
         }
-        mean /= K;
+        mean /= C;
 
         float var = 0.f;
-        for (int i = 0; i < K; ++i) {
+        for (int i = 0; i < C; ++i) {
             float xShift = x[i] - mean;
             var += xShift * xShift;
         }
-        float inv_std = 1.0f / sqrt(var / K + eps);
+        float inv_std = 1.0f / sqrt(var / C + eps);
 
-        for (int i = 0; i < K; ++i) {
+        for (int i = 0; i < C; ++i) {
             y[i] = weight[i] * (x[i] - mean) * inv_std + bias[i];
         }
     }
 }
 
-__global__ void layernorm_forward_kernel1(float *input, float *out,
-                                          float *weight, float *bias, float eps,
-                                          int B, int C, int K) {
+__global__ void layernorm_forward_kernel1(float *input, float *out, float *weight,
+                                          float *bias, float eps, int B, int T, int C) {
     // naive implementation
     // each thread handle one row of input
     int idx = blockDim.x * blockIdx.x + threadIdx.x;
-    if (idx < B * C) {
-        float *const x = input + idx * K;
-        float *const y = out + idx * K;
+    if (idx < B * T) {
+        float *const x = input + idx * C;
+        float *const y = out + idx * C;
         float mean = 0.0f;
-        for (int i = 0; i < K; ++i) {
+        for (int i = 0; i < C; ++i) {
             mean += x[i];
         }
 
-        mean /= K;
+        mean /= C;
 
         float var = 0.f;
-        for (int i = 0; i < K; ++i) {
+        for (int i = 0; i < C; ++i) {
             float xShift = x[i] - mean;
             var += xShift * xShift;
         }
-        float inv_std = 1.0f / sqrt(var / K + eps);
+        float inv_std = 1.0f / sqrt(var / C + eps);
 
-        for (int i = 0; i < K; ++i) {
+        for (int i = 0; i < C; ++i) {
             y[i] = weight[i] * (x[i] - mean) * inv_std + bias[i];
         }
     }
 }
 
-__global__ void layernorm_forward_kernel2(float *input, float *out,
-                                          float *weight, float *bias, float eps,
-                                          int B, int C, int K) {
+__global__ void layernorm_forward_kernel2(float *input, float *out, float *weight,
+                                          float *bias, float eps, int B, int T, int C) {
     // one warp one row
     // each thread handle one row of input
     int warpsPerBlock = blockDim.x / warpSize;
     int warpId = threadIdx.x / warpSize;
     int laneId = threadIdx.x % warpSize;
     int numWarps = gridDim.x * warpsPerBlock;
-    for (int row = blockIdx.x * warpsPerBlock + warpId; row < B * C;
-         row += numWarps)
-        if (row < B * C) {
-            float *const x = input + row * K;
-            float *const y = out + row * K;
+    for (int row = blockIdx.x * warpsPerBlock + warpId; row < B * T; row += numWarps)
+        if (row < B * T) {
+            float *const x = input + row * C;
+            float *const y = out + row * C;
             float sum = 0.0f;
-            for (int i = laneId; i < K; i += warpSize) {
+            for (int i = laneId; i < C; i += warpSize) {
                 sum += x[i];
             }
 
             sum = warpReduceSum(sum);
-            float mean = sum / K;
+            float mean = sum / C;
 
             float var = 0.f;
-            for (int i = laneId; i < K; i += warpSize) {
+            for (int i = laneId; i < C; i += warpSize) {
                 float xShift = x[i] - mean;
                 var += xShift * xShift;
             }
 
             var = warpReduceSum(var);
-            float inv_std = 1.0f / sqrt(var / K + eps);
+            float inv_std = 1.0f / sqrt(var / C + eps);
 
-            for (int i = laneId; i < K; i += warpSize) {
+            for (int i = laneId; i < C; i += warpSize) {
                 y[i] = weight[i] * (x[i] - mean) * inv_std + bias[i];
             }
         }
 }
 
-__global__ void layernorm_forward_kernel3(float *input, float *out,
-                                          float *weight, float *bias, float eps,
-                                          int B, int C, int K) {
+__global__ void layernorm_forward_kernel3(float *input, float *out, float *weight,
+                                          float *bias, float eps, int B, int T, int C) {
     // compares to kernel2, use cooperative groups (just for practice)
     // performance is very close to kernel 2
     namespace cg = cooperative_groups;
@@ -134,115 +134,144 @@ __global__ void layernorm_forward_kernel3(float *input, float *out,
     int warpsPerBlock = thisWarp.meta_group_size();
     int laneId = thisWarp.thread_rank();
     int numWarps = gridDim.x * warpsPerBlock;
-    for (int row = blockIdx.x * warpsPerBlock + warpId; row < B * C;
-         row += numWarps) {
-        float *const x = input + row * K;
-        float *const y = out + row * K;
+    for (int row = blockIdx.x * warpsPerBlock + warpId; row < B * T; row += numWarps) {
+        float *const x = input + row * C;
+        float *const y = out + row * C;
         float sum = 0.0f;
 
-        for (int i = laneId; i < K; i += thisWarp.num_threads()) {
+        for (int i = laneId; i < C; i += thisWarp.num_threads()) {
             sum += x[i];
         }
 
         sum = cg::reduce(thisWarp, sum, plus<float>);
 
-        float mean = sum / K;
+        float mean = sum / C;
         float var = 0.f;
 
-        for (int i = laneId; i < K; i += thisWarp.num_threads()) {
+        for (int i = laneId; i < C; i += thisWarp.num_threads()) {
             float xShift = x[i] - mean;
             var += xShift * xShift;
         }
 
         var = cg::reduce(thisWarp, var, plus<float>);
 
-        float inv_std = 1.0f / sqrt(var / K + eps);
+        float inv_std = 1.0f / sqrt(var / C + eps);
 
-        for (int i = laneId; i < K; i += thisWarp.num_threads()) {
+        for (int i = laneId; i < C; i += thisWarp.num_threads()) {
             y[i] = weight[i] * (x[i] - mean) * inv_std + bias[i];
         }
     }
 }
 
-__global__ void layernorm_forward_kernel4(float *input, float *out,
-                                          float *weight, float *bias, float eps,
-                                          int B, int C, int K) {
+__global__ void layernorm_forward_kernel4(float *input, float *out, float *weight,
+                                          float *bias, float eps, int B, int T, int C) {
     // one warp one row, plus using smem to store the shift (x - mean) values
     // when K < 2048, the performance is better than kernel 2 and 3
-    assert((K % warpSize) == 0);
+    assert((C % warpSize) == 0);
     extern __shared__ float xShifts[];
     int warpsPerBlock = blockDim.x / warpSize;
     int warpId = threadIdx.x / warpSize;
     int laneId = threadIdx.x % warpSize;
     int numWarps = gridDim.x * warpsPerBlock;
-    float *const xShiftsThisWarp = xShifts + warpId * K;
-    for (int row = blockIdx.x * warpsPerBlock + warpId; row < B * C;
-         row += numWarps)
-        if (row < B * C) {
-            float *const x = input + row * K;
-            float *const y = out + row * K;
+    float *const xShiftsThisWarp = xShifts + warpId * C;
+    for (int row = blockIdx.x * warpsPerBlock + warpId; row < B * T; row += numWarps)
+        if (row < B * T) {
+            float *const x = input + row * C;
+            float *const y = out + row * C;
             float partialSum = 0.0f;
-            for (int i = laneId; i < K; i += warpSize) {
+            for (int i = laneId; i < C; i += warpSize) {
                 xShiftsThisWarp[i] = x[i];
                 partialSum += x[i];
             }
 
             float sum = warpReduceSum(partialSum);
-            float mean = sum / K;
+            float mean = sum / C;
 
             float var = 0.f;
-            for (int i = laneId; i < K; i += warpSize) {
+            for (int i = laneId; i < C; i += warpSize) {
                 xShiftsThisWarp[i] -= mean;
                 var += xShiftsThisWarp[i] * xShiftsThisWarp[i];
             }
 
             var = warpReduceSum(var);
-            float inv_std = 1.0f / sqrt(var / K + eps);
+            float inv_std = 1.0f / sqrt(var / C + eps);
 
-            for (int i = laneId; i < K; i += warpSize) {
+            for (int i = laneId; i < C; i += warpSize) {
                 y[i] = weight[i] * xShiftsThisWarp[i] * inv_std + bias[i];
             }
         }
 }
 
-__global__ void layernorm_forward_kernel5(float *input, float *out,
-                                          float *weight, float *bias, float eps,
-                                          int B, int C, int K) {
+__global__ void layernorm_forward_kernel5(float *input, float *out, float *weight,
+                                          float *bias, float eps, int B, int T, int C) {
     // using formula D(X) = E(X^2) - E(X)^2 to reduce the number of loops
     int warpsPerBlock = blockDim.x / warpSize;
     int warpId = threadIdx.x / warpSize;
     int laneId = threadIdx.x % warpSize;
     int numWarps = gridDim.x * warpsPerBlock;
-    for (int row = blockIdx.x * warpsPerBlock + warpId; row < B * C;
-         row += numWarps)
-        if (row < B * C) {
-            float *const x = input + row * K;
-            float *const y = out + row * K;
+    for (int row = blockIdx.x * warpsPerBlock + warpId; row < B * T; row += numWarps)
+        if (row < B * T) {
+            float *const x = input + row * C;
+            float *const y = out + row * C;
             float partialSum = 0.0f;
             float partialSum2 = 0.0f;
-            for (int i = laneId; i < K; i += warpSize) {
+            for (int i = laneId; i < C; i += warpSize) {
                 float xi = x[i];
                 partialSum += xi;
                 partialSum2 += xi * xi;
             }
 
-            float mean = warpReduceSum(partialSum) / K;
-            float mean2 = warpReduceSum(partialSum2) / K;
+            float mean = warpReduceSum(partialSum) / C;
+            float mean2 = warpReduceSum(partialSum2) / C;
 
             float var = (mean2 - mean * mean);
             float inv_std = rsqrtf(var + eps);
 
-            for (int i = laneId; i < K; i += warpSize) {
+            for (int i = laneId; i < C; i += warpSize) {
                 y[i] = weight[i] * (x[i] - mean) * inv_std + bias[i];
             }
         }
 }
 
-__global__ void layernorm_forward_kernel6(float *__restrict__ input,
+__global__ void layernorm_forward_kernel6(float *input, float *out, float *weight,
+                                          float *bias, float eps, int B, int T, int C) {
+    // one warp one row, plus using smem to store the shift (x - mean) values
+    // when K < 2048, the performance is better than kernel 2 and 3
+    assert((C % warpSize) == 0);
+    extern __shared__ float sharedX[];
+    int warpsPerBlock = blockDim.x / warpSize;
+    int warpId = threadIdx.x / warpSize;
+    int laneId = threadIdx.x % warpSize;
+    int numWarps = gridDim.x * warpsPerBlock;
+    float *const xSharedWarp = sharedX + warpId * C;
+    for (int row = blockIdx.x * warpsPerBlock + warpId; row < B * T; row += numWarps)
+        if (row < B * T) {
+            float *const x = input + row * C;
+            float *const y = out + row * C;
+            float partialSum = 0.0f, partialSum2 = 0.0f;
+            for (int i = laneId; i < C; i += warpSize) {
+                float xi = x[i];
+                xSharedWarp[i] = xi;
+                partialSum += xi;
+                partialSum += xi * xi;
+            }
+
+            float mean = warpReduceSum(partialSum) / C;
+            float mean2 = warpReduceSum(partialSum2) / C;
+            float var = (mean2 - mean * mean);
+            float inv_std = 1.0f / sqrt(var / C + eps);
+
+            for (int i = laneId; i < C; i += warpSize) {
+                y[i] = weight[i] * (sharedX[i] - mean) * inv_std + bias[i];
+            }
+        }
+}
+
+__global__ void layernorm_forward_kernel7(float *__restrict__ input,
                                           float *__restrict__ out,
                                           float *__restrict__ weight,
-                                          float *__restrict__ bias, float eps,
-                                          int B, int C, int K) {
+                                          float *__restrict__ bias, float eps, int B,
+                                          int T, int C) {
     // using formula D(X) = E(X^2) - E(X)^2 to reduce the number of loops
     // while using smem to store input data
     // and use float4 to acclerate memory access
@@ -251,14 +280,14 @@ __global__ void layernorm_forward_kernel6(float *__restrict__ input,
     int warpsPerBlock = blockDim.x / warpSize;
     int warpId = threadIdx.x / warpSize;
     int laneId = threadIdx.x % warpSize;
-    f128 *xSharedWarp = xShared + warpId * (K / f128::size);
+    f128 *xSharedWarp = xShared + warpId * (C / f128::size);
     int row = blockIdx.x * warpsPerBlock + warpId;
-    if (row < B * C) {
-        float *x = input + row * K;
-        float *y = out + row * K;
+    if (row < B * T) {
+        float *x = input + row * C;
+        float *y = out + row * C;
         float warpSum = 0.0f;
         float warpSum2 = 0.0f;
-        for (int i = laneId * f128::size; i < K; i += warpSize * f128::size) {
+        for (int i = laneId * f128::size; i < C; i += warpSize * f128::size) {
             f128 xi = load128(x + i);
             xSharedWarp[i / f128::size] = xi;
             for (int k = 0; k < f128::size; ++k) {
@@ -267,30 +296,29 @@ __global__ void layernorm_forward_kernel6(float *__restrict__ input,
             }
         }
 
-        float mean = warpReduceSum(warpSum) / K;
-        float mean2 = warpReduceSum(warpSum2) / K;
+        float mean = warpReduceSum(warpSum) / C;
+        float mean2 = warpReduceSum(warpSum2) / C;
 
         float var = (mean2 - mean * mean);
         float inv_std = rsqrtf(var + eps);
 
-        for (int i = laneId * f128::size; i < K; i += warpSize * f128::size) {
+        for (int i = laneId * f128::size; i < C; i += warpSize * f128::size) {
             f128 packedW = load128(weight + i);
             f128 packedB = load128(bias + i);
             f128 packedX = xSharedWarp[i / f128::size];
             f128 out;
 #pragma unroll
             for (int k = 0; k < f128::size; ++k) {
-                out[k] = packedW[k] * inv_std * ((float)packedX[k] - mean) +
-                         packedB[k];
+                out[k] = packedW[k] * inv_std * ((float)packedX[k] - mean) + packedB[k];
             }
             store128(y + i, out);
         }
     }
 }
 
-#define B 4096
-#define C 3
-#define K 1024
+#define B 8
+#define T 1024
+#define C 768
 #define EPS 1e-5
 #define BLOCK_SIZE 128
 #define REPEAT_TIMES 100
@@ -311,113 +339,121 @@ int main(int argc, char **argv) {
         repeatTimes = atoi(argv[3]);
     }
 
-    float *input = (float *)malloc(B * C * K * sizeof(float));
-    float *output = (float *)malloc(B * C * K * sizeof(float));
-    float *weight = (float *)malloc(K * sizeof(float));
-    float *bias = (float *)malloc(K * sizeof(float));
-    float *resFromGPU = (float *)malloc(B * C * K * sizeof(float));
-    initArrFloat(input, B * C * K);
-    initArrFloat(weight, K);
-    initArrFloat(bias, K);
+    float *input = (float *)malloc(B * T * C * sizeof(float));
+    float *output = (float *)malloc(B * T * C * sizeof(float));
+    float *weight = (float *)malloc(C * sizeof(float));
+    float *bias = (float *)malloc(C * sizeof(float));
+    float *resFromGPU = (float *)malloc(B * T * C * sizeof(float));
+    initArrFloat(input, B * T * C);
+    initArrFloat(weight, C);
+    initArrFloat(bias, C);
+    zeros(output, B * T * C);
 
     float *inputGPU, *outputGPU, *weightGPU, *biasGPU;
 
-    cudaErrorCheck(cudaMalloc(&inputGPU, B * C * K * sizeof(float)));
-    cudaErrorCheck(cudaMemcpy(inputGPU, input, B * C * K * sizeof(float),
-                              cudaMemcpyHostToDevice));
-
-    cudaErrorCheck(cudaMalloc(&weightGPU, K * sizeof(float)));
-    cudaErrorCheck(cudaMemcpy(weightGPU, weight, K * sizeof(float),
-                              cudaMemcpyHostToDevice));
-
-    cudaErrorCheck(cudaMalloc(&biasGPU, K * sizeof(float)));
+    cudaErrorCheck(cudaMalloc(&inputGPU, B * T * C * sizeof(float)));
     cudaErrorCheck(
-        cudaMemcpy(biasGPU, bias, K * sizeof(float), cudaMemcpyHostToDevice));
+        cudaMemcpy(inputGPU, input, B * T * C * sizeof(float), cudaMemcpyHostToDevice));
 
-    cudaErrorCheck(cudaMalloc(&outputGPU, B * C * K * sizeof(float)));
+    cudaErrorCheck(cudaMalloc(&weightGPU, C * sizeof(float)));
+    cudaErrorCheck(
+        cudaMemcpy(weightGPU, weight, C * sizeof(float), cudaMemcpyHostToDevice));
+
+    cudaErrorCheck(cudaMalloc(&biasGPU, C * sizeof(float)));
+    cudaErrorCheck(
+        cudaMemcpy(biasGPU, bias, C * sizeof(float), cudaMemcpyHostToDevice));
+
+    cudaErrorCheck(cudaMalloc(&outputGPU, B * T * C * sizeof(float)));
+    cudaErrorCheck(cudaMemset(outputGPU, 0, B * T * C * sizeof(float)));
 
     float elapsedTime;
 
-    layernorm_forward_cpu(input, output, weight, bias, EPS, B, C, K);
+    layernorm_forward_cpu(input, output, weight, bias, EPS, B, T, C);
 
     switch (kernel) {
         case 1:
-            layernorm_forward_kernel1<<<B * C / blockSize, blockSize>>>(
-                inputGPU, outputGPU, weightGPU, biasGPU, EPS, B, C, K);
+            layernorm_forward_kernel1<<<B * T / blockSize, blockSize>>>(
+                inputGPU, outputGPU, weightGPU, biasGPU, EPS, B, T, C);
             break;
         case 2:
-            layernorm_forward_kernel2<<<B * C * 32 / blockSize, blockSize>>>(
-                inputGPU, outputGPU, weightGPU, biasGPU, EPS, B, C, K);
+            layernorm_forward_kernel2<<<B * T * 32 / blockSize, blockSize>>>(
+                inputGPU, outputGPU, weightGPU, biasGPU, EPS, B, T, C);
             break;
         case 3:
-            layernorm_forward_kernel3<<<B * C * 32 / blockSize, blockSize>>>(
-                inputGPU, outputGPU, weightGPU, biasGPU, EPS, B, C, K);
+            layernorm_forward_kernel3<<<B * T * 32 / blockSize, blockSize>>>(
+                inputGPU, outputGPU, weightGPU, biasGPU, EPS, B, T, C);
             break;
         case 4: {
-            int smemSize = K * sizeof(float) * (blockSize / 32);
-            layernorm_forward_kernel4<<<B * C * 32 / blockSize, blockSize,
-                                        smemSize>>>(
-                inputGPU, outputGPU, weightGPU, biasGPU, EPS, B, C, K);
+            int smemSize = C * sizeof(float) * (blockSize / 32);
+            layernorm_forward_kernel4<<<B * T * 32 / blockSize, blockSize, smemSize>>>(
+                inputGPU, outputGPU, weightGPU, biasGPU, EPS, B, T, C);
             break;
         }
         case 5:
-            layernorm_forward_kernel5<<<B * C * 32 / blockSize, blockSize>>>(
-                inputGPU, outputGPU, weightGPU, biasGPU, EPS, B, C, K);
+            layernorm_forward_kernel5<<<B * T * 32 / blockSize, blockSize>>>(
+                inputGPU, outputGPU, weightGPU, biasGPU, EPS, B, T, C);
             break;
         case 6: {
-            const int smemSize = blockSize / 32 * K * sizeof(float);
-            layernorm_forward_kernel6<<<B * C * 32 / blockSize, blockSize,
-                                        smemSize>>>(
-                inputGPU, outputGPU, weightGPU, biasGPU, EPS, B, C, K);
+            int smemSize = C * sizeof(float) * (blockSize / 32);
+            layernorm_forward_kernel6<<<B * T * 32 / blockSize, blockSize, smemSize>>>(
+                inputGPU, outputGPU, weightGPU, biasGPU, EPS, B, T, C);
+            break;
+        }
+        case 7: {
+            const int smemSize = blockSize / 32 * C * sizeof(float);
+            layernorm_forward_kernel7<<<B * T * 32 / blockSize, blockSize, smemSize>>>(
+                inputGPU, outputGPU, weightGPU, biasGPU, EPS, B, T, C);
             break;
         }
         default:
             printf("Error: Invalid kernel type: %i\n", kernel);
             return EXIT_FAILURE;
     }
-    cudaErrorCheck(cudaMemcpy(resFromGPU, outputGPU, B * C * K * sizeof(float),
+    cudaErrorCheck(cudaMemcpy(resFromGPU, outputGPU, B * T * C * sizeof(float),
                               cudaMemcpyDeviceToHost));
     cudaErrorCheck(cudaDeviceSynchronize());
 
-    if (checkResults(output, resFromGPU, B * C * K)) {
+    if (checkResults(output, resFromGPU, B * T * C)) {
         switch (kernel) {
             case 1:
                 benchmarkKernel(repeatTimes, layernorm_forward_kernel1,
-                                B * C / blockSize, blockSize, 0, 0,
-                                &elapsedTime, inputGPU, outputGPU, weightGPU,
-                                biasGPU, EPS, B, C, K);
+                                B * T / blockSize, blockSize, 0, 0, &elapsedTime,
+                                inputGPU, outputGPU, weightGPU, biasGPU, EPS, B, T, C);
                 break;
             case 2:
                 benchmarkKernel(repeatTimes, layernorm_forward_kernel2,
-                                ceilDiv(B * C * 32, blockSize), blockSize, 0, 0,
-                                &elapsedTime, inputGPU, outputGPU, weightGPU,
-                                biasGPU, EPS, B, C, K);
+                                ceilDiv(B * T * 32, blockSize), blockSize, 0, 0,
+                                &elapsedTime, inputGPU, outputGPU, weightGPU, biasGPU,
+                                EPS, B, T, C);
                 break;
             case 3:
                 benchmarkKernel(repeatTimes, layernorm_forward_kernel3,
-                                ceilDiv(B * C * 32, blockSize), blockSize, 0, 0,
-                                &elapsedTime, inputGPU, outputGPU, weightGPU,
-                                biasGPU, EPS, B, C, K);
+                                ceilDiv(B * T * 32, blockSize), blockSize, 0, 0,
+                                &elapsedTime, inputGPU, outputGPU, weightGPU, biasGPU,
+                                EPS, B, T, C);
                 break;
             case 4:
                 benchmarkKernel(repeatTimes, layernorm_forward_kernel4,
-                                ceilDiv(B * C * 32, blockSize), blockSize,
-                                K * sizeof(float) * (blockSize / 32), 0,
-                                &elapsedTime, inputGPU, outputGPU, weightGPU,
-                                biasGPU, EPS, B, C, K);
+                                ceilDiv(B * T * 32, blockSize), blockSize,
+                                C * sizeof(float) * (blockSize / 32), 0, &elapsedTime,
+                                inputGPU, outputGPU, weightGPU, biasGPU, EPS, B, T, C);
                 break;
             case 5:
                 benchmarkKernel(repeatTimes, layernorm_forward_kernel5,
-                                ceilDiv(B * C * 32, blockSize), blockSize, 0, 0,
-                                &elapsedTime, inputGPU, outputGPU, weightGPU,
-                                biasGPU, EPS, B, C, K);
+                                ceilDiv(B * T * 32, blockSize), blockSize, 0, 0,
+                                &elapsedTime, inputGPU, outputGPU, weightGPU, biasGPU,
+                                EPS, B, T, C);
                 break;
             case 6:
                 benchmarkKernel(repeatTimes, layernorm_forward_kernel6,
-                                ceilDiv(B * C * 32, blockSize), blockSize,
-                                blockSize / 32 * K * sizeof(float), 0,
-                                &elapsedTime, inputGPU, outputGPU, weightGPU,
-                                biasGPU, EPS, B, C, K);
+                                ceilDiv(B * T * 32, blockSize), blockSize,
+                                blockSize / 32 * C * sizeof(float), 0, &elapsedTime,
+                                inputGPU, outputGPU, weightGPU, biasGPU, EPS, B, T, C);
+            case 7:
+                benchmarkKernel(repeatTimes, layernorm_forward_kernel7,
+                                ceilDiv(B * T * 32, blockSize), blockSize,
+                                blockSize / 32 * C * sizeof(float), 0, &elapsedTime,
+                                inputGPU, outputGPU, weightGPU, biasGPU, EPS, B, T, C);
                 break;
         }
         printf(
@@ -425,7 +461,7 @@ int main(int argc, char **argv) {
             "Times: "
             "%f ms | "
             "blockSize: %i\n",
-            kernel, B, C, K, elapsedTime, blockSize);
+            kernel, B, T, C, elapsedTime, blockSize);
     }
     free(input);
     free(weight);
