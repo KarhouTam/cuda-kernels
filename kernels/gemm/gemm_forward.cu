@@ -164,12 +164,13 @@ __global__ void gemm_kernel3(const float *A, const float *B, const float *C,
     }
 }
 
-constexpr unsigned int M = 512;
-constexpr unsigned int K = 512;
-constexpr unsigned int N = 256;
-constexpr unsigned int BLOCK_SIZE_1D = 256;
-constexpr unsigned int BLOCK_SIZE_2D = 16;
-constexpr unsigned int STRIDE_KERNEL3 = 2;
+#define M 512
+#define K 512
+#define N 256
+#define BLOCK_SIZE_1D 256
+#define BLOCK_SIZE_2D 16
+#define STRIDE_KERNEL3 2
+#define REPEAT_TIMES 100
 
 int main(int argc, char **argv) {
     if (argc < 2) {
@@ -178,9 +179,13 @@ int main(int argc, char **argv) {
     }
     int kernel = atoi(argv[1]);
 
-    unsigned int blockSize = BLOCK_SIZE_1D;
+    int blockSize = BLOCK_SIZE_1D;
     if (argc > 2) {
         blockSize = atoi(argv[2]);
+    }
+    int repeatTimes = REPEAT_TIMES;
+    if (argc > 3) {
+        repeatTimes = atoi(argv[3]);
     }
 
     float *A = (float *)malloc(M * K * sizeof(float));
@@ -243,20 +248,20 @@ int main(int argc, char **argv) {
     if (checkResults(D, resFromGPU, M * N)) {
         switch (kernel) {
             case 1:
-                benchmarkKernel(gemm_kernel1, ceilDiv(M, blockSize), blockSize,
-                                0, 0, &elapsedTime, AGPU, BGPU, CGPU, DGPU, M,
-                                N, K);
+                benchmarkKernel(repeatTimes, gemm_kernel1,
+                                ceilDiv(M, blockSize), blockSize, 0, 0,
+                                &elapsedTime, AGPU, BGPU, CGPU, DGPU, M, N, K);
                 break;
             case 2:
                 benchmarkKernel(
-                    gemm_kernel2<BLOCK_SIZE_2D>,
+                    repeatTimes, gemm_kernel2<BLOCK_SIZE_2D>,
                     dim3(ceilDiv(N, BLOCK_SIZE_2D), ceilDiv(M, BLOCK_SIZE_2D)),
                     dim3(BLOCK_SIZE_2D, BLOCK_SIZE_2D), 0, 0, &elapsedTime,
                     AGPU, BGPU, CGPU, DGPU, M, N, K);
                 break;
             case 3:
                 benchmarkKernel(
-                    gemm_kernel3<BLOCK_SIZE_2D, STRIDE_KERNEL3>,
+                    repeatTimes, gemm_kernel3<BLOCK_SIZE_2D, STRIDE_KERNEL3>,
                     dim3(ceilDiv(N, BLOCK_SIZE_2D * STRIDE_KERNEL3),
                          ceilDiv(M, BLOCK_SIZE_2D * STRIDE_KERNEL3)),
                     dim3(BLOCK_SIZE_2D, BLOCK_SIZE_2D), 0, 0, &elapsedTime,

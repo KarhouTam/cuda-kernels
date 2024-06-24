@@ -121,14 +121,15 @@ __host__ __device__ inline float ceilDiv(T dividend, T divisor) {
 }
 
 template <typename Kernel, typename... Args>
-void benchmarkKernel(Kernel kernel, const dim3 gridDim, const dim3 blockDim,
-                     unsigned int smemSize, CUstream_st* stream,
-                     float* totalElapsedTime, Args&&... args) {
+void benchmarkKernel(int repeatTimes, Kernel kernel, const dim3 gridDim,
+                     const dim3 blockDim, unsigned int smemSize,
+                     CUstream_st* stream, float* totalElapsedTime,
+                     Args&&... args) {
     cudaEvent_t begin, end;
     cudaErrorCheck(cudaEventCreate(&begin));
     cudaErrorCheck(cudaEventCreate(&end));
     float elapsedTime;
-    for (int i = 0; i < 100; ++i) {
+    for (int i = 0; i < repeatTimes; ++i) {
         elapsedTime = 0.0f;
         cudaEventRecord(begin);
         kernel<<<gridDim, blockDim, smemSize, stream>>>(
@@ -139,7 +140,7 @@ void benchmarkKernel(Kernel kernel, const dim3 gridDim, const dim3 blockDim,
         cudaErrorCheck(cudaEventElapsedTime(&elapsedTime, begin, end));
         *totalElapsedTime += elapsedTime;
     }
-    *totalElapsedTime /= 100.0f;
+    *totalElapsedTime /= (float)repeatTimes;
     cudaErrorCheck(cudaEventDestroy(begin));
     cudaErrorCheck(cudaEventDestroy(end));
 }
@@ -162,11 +163,13 @@ __device__ __forceinline__ T divide(const T& a, const T& b) {
 }
 
 template <typename Kernel, typename... Args>
-void benchmarkKernel(Kernel kernel, const int gridSize, const int blockSize,
-                     unsigned int smemSize, CUstream_st* stream,
-                     float* totalElapsedTime, Args&&... args) {
-    benchmarkKernel(kernel, dim3(gridSize), dim3(blockSize), smemSize, stream,
-                    totalElapsedTime, std::forward<Args>(args)...);
+void benchmarkKernel(int repeatTimes, Kernel kernel, const int gridSize,
+                     const int blockSize, unsigned int smemSize,
+                     CUstream_st* stream, float* totalElapsedTime,
+                     Args&&... args) {
+    benchmarkKernel(repeatTimes, kernel, dim3(gridSize), dim3(blockSize),
+                    smemSize, stream, totalElapsedTime,
+                    std::forward<Args>(args)...);
 }
 
 #endif

@@ -72,10 +72,11 @@ __global__ void relu_forward_kernel3(float* input, float* output, int M,
             float* const x = input + row * N;
             float* const y = output + row * N;
 
-            for (int i = laneId * f128::size; i < N; i += warpSize * f128::size) {
+            for (int i = laneId * f128::size; i < N;
+                 i += warpSize * f128::size) {
                 f128 packedX = load128(x + i);
                 f128 out;
-                #pragma unroll
+#pragma unroll
                 for (int k = 0; k < f128::size; ++k) {
                     out[k] = packedX[k] > 0 ? packedX[k] : 0.0f;
                 }
@@ -87,6 +88,7 @@ __global__ void relu_forward_kernel3(float* input, float* output, int M,
 #define M 8196
 #define N 8196
 #define BLOCK_SIZE 128
+#define REPEAT_TIMES 100
 
 int main(int argc, char** argv) {
     if (argc < 2) {
@@ -98,6 +100,10 @@ int main(int argc, char** argv) {
     int blockSize = BLOCK_SIZE;
     if (argc > 2) {
         blockSize = atoi(argv[2]);
+    }
+    int repeatTimes = REPEAT_TIMES;
+    if (argc > 3) {
+        repeatTimes = atoi(argv[3]);
     }
 
     float* input = (float*)malloc(M * N * sizeof(float));
@@ -139,19 +145,19 @@ int main(int argc, char** argv) {
     if (checkResults(output, resFromGPU, M * N)) {
         switch (kernel) {
             case 1:
-                benchmarkKernel(relu_forward_kernel1, M * N / blockSize,
-                                blockSize, 0, 0, &elapsedTime, inputGPU,
-                                outputGPU, M, N);
+                benchmarkKernel(repeatTimes, relu_forward_kernel1,
+                                M * N / blockSize, blockSize, 0, 0,
+                                &elapsedTime, inputGPU, outputGPU, M, N);
                 break;
             case 2:
-                benchmarkKernel(relu_forward_kernel2, M * N / blockSize,
-                                blockSize, 0, 0, &elapsedTime, inputGPU,
-                                outputGPU, M, N);
+                benchmarkKernel(repeatTimes, relu_forward_kernel2,
+                                M * N / blockSize, blockSize, 0, 0,
+                                &elapsedTime, inputGPU, outputGPU, M, N);
                 break;
             case 3:
-                benchmarkKernel(relu_forward_kernel3, M * N / blockSize,
-                                blockSize, 0, 0, &elapsedTime, inputGPU,
-                                outputGPU, M, N);
+                benchmarkKernel(repeatTimes, relu_forward_kernel3,
+                                M * N / blockSize, blockSize, 0, 0,
+                                &elapsedTime, inputGPU, outputGPU, M, N);
                 break;
         }
         printf(

@@ -293,6 +293,7 @@ __global__ void layernorm_forward_kernel6(float *__restrict__ input,
 #define K 1024
 #define EPS 1e-5
 #define BLOCK_SIZE 128
+#define REPEAT_TIMES 100
 
 int main(int argc, char **argv) {
     if (argc < 2) {
@@ -304,6 +305,10 @@ int main(int argc, char **argv) {
     int blockSize = BLOCK_SIZE;
     if (argc > 2) {
         blockSize = atoi(argv[2]);
+    }
+    int repeatTimes = REPEAT_TIMES;
+    if (argc > 3) {
+        repeatTimes = atoi(argv[3]);
     }
 
     float *input = (float *)malloc(B * C * K * sizeof(float));
@@ -377,37 +382,38 @@ int main(int argc, char **argv) {
     if (checkResults(output, resFromGPU, B * C * K)) {
         switch (kernel) {
             case 1:
-                benchmarkKernel(layernorm_forward_kernel1, B * C / blockSize,
-                                blockSize, 0, 0, &elapsedTime, inputGPU,
-                                outputGPU, weightGPU, biasGPU, EPS, B, C, K);
+                benchmarkKernel(repeatTimes, layernorm_forward_kernel1,
+                                B * C / blockSize, blockSize, 0, 0,
+                                &elapsedTime, inputGPU, outputGPU, weightGPU,
+                                biasGPU, EPS, B, C, K);
                 break;
             case 2:
-                benchmarkKernel(layernorm_forward_kernel2,
+                benchmarkKernel(repeatTimes, layernorm_forward_kernel2,
                                 ceilDiv(B * C * 32, blockSize), blockSize, 0, 0,
                                 &elapsedTime, inputGPU, outputGPU, weightGPU,
                                 biasGPU, EPS, B, C, K);
                 break;
             case 3:
-                benchmarkKernel(layernorm_forward_kernel3,
+                benchmarkKernel(repeatTimes, layernorm_forward_kernel3,
                                 ceilDiv(B * C * 32, blockSize), blockSize, 0, 0,
                                 &elapsedTime, inputGPU, outputGPU, weightGPU,
                                 biasGPU, EPS, B, C, K);
                 break;
             case 4:
-                benchmarkKernel(layernorm_forward_kernel4,
+                benchmarkKernel(repeatTimes, layernorm_forward_kernel4,
                                 ceilDiv(B * C * 32, blockSize), blockSize,
                                 K * sizeof(float) * (blockSize / 32), 0,
                                 &elapsedTime, inputGPU, outputGPU, weightGPU,
                                 biasGPU, EPS, B, C, K);
                 break;
             case 5:
-                benchmarkKernel(layernorm_forward_kernel5,
+                benchmarkKernel(repeatTimes, layernorm_forward_kernel5,
                                 ceilDiv(B * C * 32, blockSize), blockSize, 0, 0,
                                 &elapsedTime, inputGPU, outputGPU, weightGPU,
                                 biasGPU, EPS, B, C, K);
                 break;
             case 6:
-                benchmarkKernel(layernorm_forward_kernel6,
+                benchmarkKernel(repeatTimes, layernorm_forward_kernel6,
                                 ceilDiv(B * C * 32, blockSize), blockSize,
                                 blockSize / 32 * K * sizeof(float), 0,
                                 &elapsedTime, inputGPU, outputGPU, weightGPU,

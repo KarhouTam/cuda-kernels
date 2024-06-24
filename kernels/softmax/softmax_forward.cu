@@ -181,7 +181,7 @@ __global__ void online_softmax_kernel4(float* __restrict__ input,
         for (int i = laneId * f128::size; i < N; i += warpSize * f128::size) {
             f128 xi = load128cs(x + i);
             float packMax = -INFINITY, packSum = 0.0f;
-            #pragma unroll
+#pragma unroll
             for (int k = 0; k < f128::size; ++k) {
                 float newPackMax = fmaxf(packMax, xi[k]);
                 packSum = expf(packMax - newPackMax) * packSum +
@@ -208,7 +208,7 @@ __global__ void online_softmax_kernel4(float* __restrict__ input,
         for (int i = laneId * f128::size; i < N; i += warpSize * f128::size) {
             f128 out;
             f128 xi = load128cs(x + i);
-            #pragma unroll
+#pragma unroll
             for (int k = 0; k < f128::size; ++k) {
                 out[k] = expf(xi[k] - maxVal) / sumVal;
             }
@@ -219,6 +219,7 @@ __global__ void online_softmax_kernel4(float* __restrict__ input,
 #define M 8196
 #define N 8196
 #define BLOCK_SIZE 128
+#define REPEAT_TIMES 100
 
 int main(int argc, char** argv) {
     if (argc < 2) {
@@ -230,6 +231,10 @@ int main(int argc, char** argv) {
     int blockSize = BLOCK_SIZE;
     if (argc > 2) {
         blockSize = atoi(argv[2]);
+    }
+    int repeatTimes = REPEAT_TIMES;
+    if (argc > 3) {
+        repeatTimes = atoi(argv[3]);
     }
 
     float* input = (float*)malloc(M * N * sizeof(float));
@@ -277,21 +282,22 @@ int main(int argc, char** argv) {
     if (checkResults(output, resFromGPU, M * N)) {
         switch (kernel) {
             case 1:
-                benchmarkKernel(softmax_kernel1, M * N / blockSize, blockSize,
-                                0, 0, &elapsedTime, inputGPU, outputGPU, M, N);
-                break;
-            case 2:
-                benchmarkKernel(softmax_kernel2, ceilDiv(M * 32, blockSize),
+                benchmarkKernel(repeatTimes, softmax_kernel1, M * N / blockSize,
                                 blockSize, 0, 0, &elapsedTime, inputGPU,
                                 outputGPU, M, N);
                 break;
+            case 2:
+                benchmarkKernel(repeatTimes, softmax_kernel2,
+                                ceilDiv(M * 32, blockSize), blockSize, 0, 0,
+                                &elapsedTime, inputGPU, outputGPU, M, N);
+                break;
             case 3:
-                benchmarkKernel(online_softmax_kernel3,
+                benchmarkKernel(repeatTimes, online_softmax_kernel3,
                                 ceilDiv(M * 32, blockSize), blockSize, 0, 0,
                                 &elapsedTime, inputGPU, outputGPU, M, N);
                 break;
             case 4:
-                benchmarkKernel(online_softmax_kernel4,
+                benchmarkKernel(repeatTimes, online_softmax_kernel4,
                                 ceilDiv(M * 32, blockSize), blockSize, 0, 0,
                                 &elapsedTime, inputGPU, outputGPU, M, N);
                 break;
