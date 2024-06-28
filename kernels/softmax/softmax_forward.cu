@@ -65,8 +65,7 @@ void online_softmax_cpu(float* input, float* output, const int M, const int N) {
     }
 }
 
-__global__ void softmax_kernel1(float* input, float* output, const int M,
-                                const int N) {
+__global__ void softmax_kernel1(float* input, float* output, const int M, const int N) {
     // naive implementation
     // one thread one row
     const int bid = blockIdx.x;
@@ -89,8 +88,7 @@ __global__ void softmax_kernel1(float* input, float* output, const int M,
     }
 }
 
-__global__ void softmax_kernel2(float* input, float* output, const int M,
-                                const int N) {
+__global__ void softmax_kernel2(float* input, float* output, const int M, const int N) {
     // use more threads per row than kernel1
     // one warp (32 threads) process one row
     // use warp reduce functions
@@ -126,8 +124,7 @@ __global__ void softmax_kernel2(float* input, float* output, const int M,
     }
 }
 
-__global__ void online_softmax_kernel3(float* input, float* output, const int M,
-                                       const int N) {
+__global__ void online_softmax_kernel3(float* input, float* output, const int M, const int N) {
     const int tid = threadIdx.x;
     const int warpId = tid / warpSize;
     const int laneId = tid % warpSize;
@@ -162,12 +159,86 @@ __global__ void online_softmax_kernel3(float* input, float* output, const int M,
     }
 }
 
-__global__ void online_softmax_kernel4(float* __restrict__ input,
-                                       float* __restrict__ output, const int M,
+__global__ void online_softmax_kernel4(float* input, float* output, const int M, const int N) {
+    // further, each block handles one row
+    if (blockIdx.x < M) {
+        extern __shared__ float shared[];
+        const int laneId = threadIdx.x % warpSize;
+        const int warpId = threadIdx.x / warpSize;
+        const int warpsPerBlock = ceilDiv(blockDim.x, warpSize);
+        const int dataPerWarp = ceilDiv(N, warpsPerBlock);
+        const int start = dataPerWarp * warpId;
+        const int end = min((warpId + 1) * dataPerWarp, N);
+        const float* x = input + blockIdx.x * N;
+        float* const y = output + blockIdx.x * N;
+
+        float* const maxVals = shared;
+        float* const sumVals = shared + warpsPerBlock;
+
+        // each lane calculates its own max and sum
+        float maxval = -INFINITY, sumval = 0.f;
+        for (int i = start + laneId; i < end; i += warpSize) {
+            float newLaneMax = fmaxf(maxval, x[i]);
+            sumval = sumval * expf(maxval - newLaneMax) + expf(x[i] - newLaneMax);
+            maxval = newLaneMax;
+        }
+
+        // have 32 sub-max and sub-sum values hold by each lane in the same warp
+        // warp reduce, get the warpwise max and sum
+        warpReduceMax(maxval);
+        warpReduceSum(sumval);
+
+        // store each warp's max and sum to smem
+        if (laneId == 0) {
+            maxVals[warpId] = maxval;
+            sumVals[warpId] = sumval;
+        }
+        __syncthreads();
+        // re-init for the next block reduce process
+
+        // let warp 0 do the block reduce
+        if (warpId == 0) {
+            if (laneId < warpsPerBlock) {
+                maxval = maxVals[laneId];
+                sumval = sumVals[laneId];
+            } else {
+                maxval = -INFINITY;
+                sumval = 0.f;
+            }
+            for (int offset = warpSize / 2; offset > 0; offset >>= 1) {
+                float otherMax = __shfl_xor_sync(0xFFFFFFFF, maxval, offset);
+                float otherSum = __shfl_xor_sync(0xFFFFFFFF, sumval, offset);
+                if (maxval < otherMax) {
+                    sumval = sumval * expf(maxval - otherMax) + otherSum;
+                    maxval = otherMax;
+                } else {
+                    sumval += otherSum * expf(otherMax - maxval);
+                }
+            }
+        }
+        __syncthreads();
+
+        // update the blockwise sum and max to smem
+        if (warpId == 0 && laneId == 0) {
+            maxVals[0] = maxval;
+            sumVals[0] = sumval;
+        }
+        __syncthreads();
+
+        // warps take the blockwise max and sum and do the final calculation
+        float blockSum = sumVals[0], blockMax = maxVals[0];
+        for (int i = start + laneId; i < end; i += 32) {
+            y[i] = expf(x[i] - blockMax) / blockSum;
+        }
+    }
+}
+
+__global__ void online_softmax_kernel5(float* __restrict__ input, float* __restrict__ output, const int M,
                                        const int N) {
     // this kernel is f*cking faster than any other kernels!
     // use float4 to acclerate memory access
     // each warp (32 threads) handles one row
+    // TODO: fix bug of misaligned data memory access
     using f128 = Package128<float>;
     const int tid = threadIdx.x;
     const int warpId = tid / warpSize;
@@ -178,19 +249,30 @@ __global__ void online_softmax_kernel4(float* __restrict__ input,
         float* x = input + row * N;
         float* y = output + row * N;
         float laneMax = -INFINITY, laneSum = 0.0f;
-        for (int i = laneId * f128::size; i < N; i += warpSize * f128::size) {
-            f128 xi = load128cs(x + i);
+        int i = ceilDiv(N, f128::size) + laneId - warpSize;
+        while ((i + 1) * f128::size >= N) {
+            for (int k = 0; k < f128::size; ++k) {
+                if (i * f128::size + k >= N) {
+                    break;
+                }
+                float newLaneMax = fmaxf(laneMax, x[i * f128::size + k]);
+                laneSum = laneSum * expf(laneMax - newLaneMax) + expf(x[i * f128::size + k] - newLaneMax);
+                laneMax = newLaneMax;
+            }
+            i -= warpSize;
+        }
+
+        for (; i >= 0; i -= warpSize) {
+            f128 xi = load128cs(x + i * f128::size);
             float packMax = -INFINITY, packSum = 0.0f;
 #pragma unroll
             for (int k = 0; k < f128::size; ++k) {
                 float newPackMax = fmaxf(packMax, xi[k]);
-                packSum = expf(packMax - newPackMax) * packSum +
-                          expf(xi[k] - newPackMax);
+                packSum = expf(packMax - newPackMax) * packSum + expf(xi[k] - newPackMax);
                 packMax = newPackMax;
             }
             float newLaneMax = fmaxf(laneMax, packMax);
-            laneSum = laneSum * expf(laneMax - newLaneMax) +
-                      packSum * expf(packMax - newLaneMax);
+            laneSum = laneSum * expf(laneMax - newLaneMax) + packSum * expf(packMax - newLaneMax);
             laneMax = newLaneMax;
         }
 
@@ -205,14 +287,26 @@ __global__ void online_softmax_kernel4(float* __restrict__ input,
                 maxVal = offsetMax;
             }
         }
-        for (int i = laneId * f128::size; i < N; i += warpSize * f128::size) {
+
+        i = ceilDiv(N, f128::size) + laneId - warpSize;
+        while ((i + 1) * f128::size >= N) {
+            for (int k = 0; k < f128::size; ++k) {
+                if (i * f128::size + k >= N) {
+                    break;
+                }
+                y[i * f128::size + k] = expf(x[i * f128::size + k] - maxVal) / sumVal;
+            }
+            i -= warpSize;
+        }
+
+        for (; i >= 0; i -= warpSize) {
             f128 out;
-            f128 xi = load128cs(x + i);
+            f128 xi = load128cs(x + i * f128::size);
 #pragma unroll
             for (int k = 0; k < f128::size; ++k) {
                 out[k] = expf(xi[k] - maxVal) / sumVal;
             }
-            store128cs(y + i, out);
+            store128cs(y + i * f128::size, out);
         }
     }
 }
@@ -244,62 +338,61 @@ int main(int argc, char** argv) {
 
     float *inputGPU, *outputGPU;
     cudaErrorCheck(cudaMalloc(&inputGPU, M * N * sizeof(float)));
-    cudaErrorCheck(cudaMemcpy(inputGPU, input, M * N * sizeof(float),
-                              cudaMemcpyHostToDevice));
+    cudaErrorCheck(cudaMemcpy(inputGPU, input, M * N * sizeof(float), cudaMemcpyHostToDevice));
     cudaErrorCheck(cudaMalloc(&outputGPU, M * N * sizeof(float)));
 
     online_softmax_cpu(input, output, M, N);
 
     switch (kernel) {
         case 1:
-            softmax_kernel1<<<M * N / blockSize, blockSize>>>(inputGPU,
-                                                              outputGPU, M, N);
+            softmax_kernel1<<<M * N / blockSize, blockSize>>>(inputGPU, outputGPU, M, N);
             break;
         case 2:
-            softmax_kernel2<<<ceilDiv(M * 32, blockSize), blockSize>>>(
-                inputGPU, outputGPU, M, N);
+            softmax_kernel2<<<ceilDiv(M * 32, blockSize), blockSize>>>(inputGPU, outputGPU, M, N);
             break;
 
         case 3:
-            online_softmax_kernel3<<<ceilDiv(M * 32, blockSize), blockSize>>>(
-                inputGPU, outputGPU, M, N);
+            online_softmax_kernel3<<<ceilDiv(M * 32, blockSize), blockSize>>>(inputGPU, outputGPU, M, N);
             break;
 
         case 4:
-            online_softmax_kernel4<<<ceilDiv(M * 32, blockSize), blockSize,
-                                     0>>>(inputGPU, outputGPU, M, N);
+            online_softmax_kernel4<<<M, blockSize, blockSize / 32 * 2 * sizeof(float)>>>(inputGPU,
+                                                                                         outputGPU, M, N);
             break;
 
+        case 5:
+            online_softmax_kernel5<<<ceilDiv(M * 32, blockSize), blockSize, 0>>>(inputGPU, outputGPU, M, N);
+            break;
         default:
             printf("Error: Invalid kernel type: %i\n", kernel);
             return EXIT_FAILURE;
     }
     cudaErrorCheck(cudaDeviceSynchronize());
-    cudaErrorCheck(cudaMemcpy(resFromGPU, outputGPU, M * N * sizeof(float),
-                              cudaMemcpyDeviceToHost));
+    cudaErrorCheck(cudaMemcpy(resFromGPU, outputGPU, M * N * sizeof(float), cudaMemcpyDeviceToHost));
 
     float elapsedTime;
     if (checkResults(output, resFromGPU, M * N)) {
         switch (kernel) {
             case 1:
-                benchmarkKernel(repeatTimes, softmax_kernel1, M * N / blockSize,
-                                blockSize, 0, 0, &elapsedTime, inputGPU,
-                                outputGPU, M, N);
+                benchmarkKernel(repeatTimes, softmax_kernel1, M * N / blockSize, blockSize, 0, 0,
+                                &elapsedTime, inputGPU, outputGPU, M, N);
                 break;
             case 2:
-                benchmarkKernel(repeatTimes, softmax_kernel2,
-                                ceilDiv(M * 32, blockSize), blockSize, 0, 0,
+                benchmarkKernel(repeatTimes, softmax_kernel2, ceilDiv(M * 32, blockSize), blockSize, 0, 0,
                                 &elapsedTime, inputGPU, outputGPU, M, N);
                 break;
             case 3:
-                benchmarkKernel(repeatTimes, online_softmax_kernel3,
-                                ceilDiv(M * 32, blockSize), blockSize, 0, 0,
-                                &elapsedTime, inputGPU, outputGPU, M, N);
+                benchmarkKernel(repeatTimes, online_softmax_kernel3, ceilDiv(M * 32, blockSize), blockSize,
+                                0, 0, &elapsedTime, inputGPU, outputGPU, M, N);
                 break;
             case 4:
-                benchmarkKernel(repeatTimes, online_softmax_kernel4,
-                                ceilDiv(M * 32, blockSize), blockSize, 0, 0,
-                                &elapsedTime, inputGPU, outputGPU, M, N);
+                benchmarkKernel(repeatTimes, online_softmax_kernel4, M, blockSize,
+                                blockSize / 32 * 2 * sizeof(float), 0, &elapsedTime, inputGPU, outputGPU, M,
+                                N);
+                break;
+            case 5:
+                benchmarkKernel(repeatTimes, online_softmax_kernel5, ceilDiv(M * 32, blockSize), blockSize,
+                                0, 0, &elapsedTime, inputGPU, outputGPU, M, N);
                 break;
         }
         printf(
