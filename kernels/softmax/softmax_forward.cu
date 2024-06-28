@@ -20,8 +20,10 @@ kernel1, each warp (32 threads) handles one row.
 online_softmax_forward_kernel3(): Online softmax forward implementation on CUDA.
 Also each warp handles one row of the input.
 
-(Fastest)
 softmax_forward_kernel4(): Online softmax forward implementation on CUDA.
+Using block reduce.
+
+softmax_forward_kernel5(): Online softmax forward implementation on CUDA.
 Each warp handles one row of the input.
 Use float4 to acclerate memory access.
 
