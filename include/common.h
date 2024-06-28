@@ -105,8 +105,7 @@ bool checkResults(float* resCPU, float* resFromGPU, const int N) {
     float tolerance = 1e-4f;
     for (int i = 0; i < N; i++) {
         if (abs(resFromGPU[i] - resCPU[i]) > tolerance) {
-            printf("checkResultsError: %f != %f, index: %i\n", resCPU[i], resFromGPU[i],
-                   i);
+            printf("checkResultsError: %f != %f, index: %i\n", resCPU[i], resFromGPU[i], i);
             return false;
         }
     }
@@ -137,9 +136,8 @@ __host__ __device__ inline float ceilDiv(T dividend, T divisor) {
 }
 
 template <typename Kernel, typename... Args>
-void benchmarkKernel(int repeatTimes, Kernel kernel, const dim3 gridDim,
-                     const dim3 blockDim, unsigned int smemSize, CUstream_st* stream,
-                     float* totalElapsedTime, Args&&... args) {
+void benchmarkKernel(int repeatTimes, Kernel kernel, const dim3 gridDim, const dim3 blockDim,
+                     unsigned int smemSize, CUstream_st* stream, float* totalElapsedTime, Args&&... args) {
     cudaEvent_t begin, end;
     cudaErrorCheck(cudaEventCreate(&begin));
     cudaErrorCheck(cudaEventCreate(&end));
@@ -177,11 +175,10 @@ __device__ __forceinline__ T divide(const T& a, const T& b) {
 }
 
 template <typename Kernel, typename... Args>
-void benchmarkKernel(int repeatTimes, Kernel kernel, const int gridSize,
-                     const int blockSize, unsigned int smemSize, CUstream_st* stream,
-                     float* totalElapsedTime, Args&&... args) {
-    benchmarkKernel(repeatTimes, kernel, dim3(gridSize), dim3(blockSize), smemSize,
-                    stream, totalElapsedTime, std::forward<Args>(args)...);
+void benchmarkKernel(int repeatTimes, Kernel kernel, const int gridSize, const int blockSize,
+                     unsigned int smemSize, CUstream_st* stream, float* totalElapsedTime, Args&&... args) {
+    benchmarkKernel(repeatTimes, kernel, dim3(gridSize), dim3(blockSize), smemSize, stream,
+                    totalElapsedTime, std::forward<Args>(args)...);
 }
 
 #endif
