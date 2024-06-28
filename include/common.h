@@ -131,8 +131,13 @@ __device__ T warpReduceSum(T val) {
 }
 
 template <typename T>
-__host__ __device__ inline float ceilDiv(T dividend, T divisor) {
+__host__ __device__ inline T ceilDiv(T dividend, T divisor) {
     return (dividend + divisor - 1) / divisor;
+}
+
+template <typename T1, typename T2>
+__host__ __device__ inline T1 ceilDiv(T1 dividend, T2 divisor) {
+    return (dividend + (T1)divisor - 1) / (T1)divisor;
 }
 
 template <typename Kernel, typename... Args>
