@@ -347,7 +347,7 @@ int main(int argc, char** argv) {
 
     switch (kernel) {
         case 1:
-            softmax_kernel1<<<M * N / blockSize, blockSize>>>(inputGPU, outputGPU, M, N);
+            softmax_kernel1<<<ceilDiv(M, blockSize), blockSize>>>(inputGPU, outputGPU, M, N);
             break;
         case 2:
             softmax_kernel2<<<ceilDiv(M * 32, blockSize), blockSize>>>(inputGPU, outputGPU, M, N);
