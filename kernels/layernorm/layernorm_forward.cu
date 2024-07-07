@@ -475,7 +475,7 @@ int main(int argc, char **argv) {
     cudaErrorCheck(cudaMemcpy(resFromGPU, outputGPU, B * T * C * sizeof(float), cudaMemcpyDeviceToHost));
     cudaErrorCheck(cudaDeviceSynchronize());
 
-    if (0 && checkResults(output, resFromGPU, B * T * C)) {
+    if (checkResults(output, resFromGPU, B * T * C)) {
         switch (kernel) {
             case 1:
                 benchmarkKernel(repeatTimes, layernorm_forward_kernel1, B * T / blockSize, blockSize, 0, 0,
