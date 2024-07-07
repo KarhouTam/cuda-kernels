@@ -13,7 +13,7 @@ data = torch.randn(8196, 8196).cuda()
 
 customs = load(
     name="customs",
-    sources=["bind.cpp", "softmax.cu"],
+    sources=["bind.cpp", "kernel.cu", "wrapper.cu"],
     extra_cuda_cflags=["-O3", "--use_fast_math"],
     verbose=True,
 )
@@ -62,6 +62,6 @@ print(prof.key_averages().table(sort_by="cuda_time_total", row_limit=10))
 # profile our custom softmax kernel
 print("=" * 60, "Custom Softmax", "=" * 60)
 with torch.autograd.profiler.profile(use_cuda=True) as prof:
-    customs.softmax(data)
-    # custom_softmax(data)
+    # customs.softmax(data) # directly calling the kernel would let the profiler ignore it.
+    custom_softmax(data) # so we need to wrap the kernel by torch.autograd.Function
 print(prof.key_averages().table(sort_by="cuda_time_total", row_limit=10))
