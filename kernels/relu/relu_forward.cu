@@ -13,6 +13,10 @@ one row of the input.
 relu_forward_kernel2(): Optimized implementation on CUDA. Compares to
 kernel1, each warp (32 threads) handles one row.
 
+relu_forward_kernel3(): Optimized implementation on CUDA. Compares to
+kernel2, using float4.
+
+relu_forward_kernel4(): Optimized implementation on CUDA. Each thread handles one FLOAT4.
 */
 
 void relu_cpu(float* input, float* output, const int M, const int N) {
@@ -25,8 +29,7 @@ void relu_cpu(float* input, float* output, const int M, const int N) {
     }
 }
 
-__global__ void relu_forward_kernel1(const float* input, float* output,
-                                     const int M, const int N) {
+__global__ void relu_forward_kernel1(const float* input, float* output, const int M, const int N) {
     const int idx = blockDim.x * blockIdx.x + threadIdx.x;
     if (idx < M) {
         const float* x = input + idx * N;
@@ -37,15 +40,13 @@ __global__ void relu_forward_kernel1(const float* input, float* output,
     }
 }
 
-__global__ void relu_forward_kernel2(float* input, float* output, int M,
-                                     int N) {
+__global__ void relu_forward_kernel2(float* input, float* output, int M, int N) {
     // each warp handles one row of the input
     int warpsPerBlock = blockDim.x / warpSize;
     int warpId = threadIdx.x / warpSize;
     int laneId = threadIdx.x % warpSize;
     int numWarps = gridDim.x * warpsPerBlock;
-    for (int row = blockIdx.x * warpsPerBlock + warpId; row < M;
-         row += numWarps)
+    for (int row = blockIdx.x * warpsPerBlock + warpId; row < M; row += numWarps)
         if (row < M) {
             float* const x = input + row * N;
             float* const y = output + row * N;
@@ -56,8 +57,7 @@ __global__ void relu_forward_kernel2(float* input, float* output, int M,
         }
 }
 
-__global__ void relu_forward_kernel3(float* input, float* output, int M,
-                                     int N) {
+__global__ void relu_forward_kernel3(float* input, float* output, int M, int N) {
     // each warp handles one row of the input
     // use floar4 to acclerate memory accessing
     // but seems improvement is not significant
@@ -66,14 +66,12 @@ __global__ void relu_forward_kernel3(float* input, float* output, int M,
     int warpId = threadIdx.x / warpSize;
     int laneId = threadIdx.x % warpSize;
     int numWarps = gridDim.x * warpsPerBlock;
-    for (int row = blockIdx.x * warpsPerBlock + warpId; row < M;
-         row += numWarps)
+    for (int row = blockIdx.x * warpsPerBlock + warpId; row < M; row += numWarps)
         if (row < M) {
             float* const x = input + row * N;
             float* const y = output + row * N;
 
-            for (int i = laneId * f128::size; i < N;
-                 i += warpSize * f128::size) {
+            for (int i = laneId * f128::size; i < N; i += warpSize * f128::size) {
                 f128 packedX = load128(x + i);
                 f128 out;
 #pragma unroll
@@ -85,14 +83,31 @@ __global__ void relu_forward_kernel3(float* input, float* output, int M,
         }
 }
 
-#define M 8196
-#define N 8196
+__global__ void relu_forward_kernel4(float* input, float* output, int M, int N) {
+    using f128 = Package128<float>;
+    const int idx = (blockIdx.x * blockDim.x + threadIdx.x) * f128::size;
+    if (idx + f128::size < M * N) {
+        f128 packedX = load128cs(input + idx);
+        f128 packedY;
+        for (int k = 0; k < f128::size; ++k) {
+            packedY[k] = packedX[k] > 0.0f ? packedX[k] : 0.0f;
+        }
+        store128(output + idx, packedY);
+    } else {
+        for (int i = idx; i < M * N; ++i) {
+            output[i] = input[i] > 0.0f ? input[i] : 0.0f;
+        }
+    }
+}
+
+#define M 8192
+#define N 8192
 #define BLOCK_SIZE 128
 #define REPEAT_TIMES 100
 
 int main(int argc, char** argv) {
     if (argc < 2) {
-        fprintf(stderr, "Usage: relu_forward <kernel> [blockSize]\n");
+        fprintf(stderr, "Usage: relu_forward <kernel> [blockSize] [benchmarkRepeatTimes]\n");
         return EXIT_FAILURE;
     }
     int kernel = atoi(argv[1]);
@@ -113,8 +128,7 @@ int main(int argc, char** argv) {
 
     float *inputGPU, *outputGPU;
     cudaErrorCheck(cudaMalloc(&inputGPU, M * N * sizeof(float)));
-    cudaErrorCheck(cudaMemcpy(inputGPU, input, M * N * sizeof(float),
-                              cudaMemcpyHostToDevice));
+    cudaErrorCheck(cudaMemcpy(inputGPU, input, M * N * sizeof(float), cudaMemcpyHostToDevice));
     cudaErrorCheck(cudaMalloc(&outputGPU, M * N * sizeof(float)));
 
     float elapsedTime;
@@ -123,40 +137,42 @@ int main(int argc, char** argv) {
 
     switch (kernel) {
         case 1:
-            relu_forward_kernel1<<<M * N / blockSize, blockSize>>>(
-                inputGPU, outputGPU, M, N);
+            relu_forward_kernel1<<<M * N / blockSize, blockSize>>>(inputGPU, outputGPU, M, N);
             break;
         case 2:
-            relu_forward_kernel2<<<M * N / blockSize, blockSize>>>(
-                inputGPU, outputGPU, M, N);
+            relu_forward_kernel2<<<M * N / blockSize, blockSize>>>(inputGPU, outputGPU, M, N);
             break;
         case 3:
-            relu_forward_kernel3<<<M * N / blockSize, blockSize>>>(
+            relu_forward_kernel3<<<M * N / blockSize, blockSize>>>(inputGPU, outputGPU, M, N);
+            break;
+        case 4:
+            relu_forward_kernel4<<<ceilDiv(M * N, (blockSize * Package128<float>::size)), blockSize>>>(
                 inputGPU, outputGPU, M, N);
             break;
         default:
             printf("Error: Invalid kernel type: %i\n", kernel);
             return EXIT_FAILURE;
     }
-    cudaErrorCheck(cudaMemcpy(resFromGPU, outputGPU, M * N * sizeof(float),
-                              cudaMemcpyDeviceToHost));
+    cudaErrorCheck(cudaMemcpy(resFromGPU, outputGPU, M * N * sizeof(float), cudaMemcpyDeviceToHost));
     cudaErrorCheck(cudaDeviceSynchronize());
 
     if (checkResults(output, resFromGPU, M * N)) {
         switch (kernel) {
             case 1:
-                benchmarkKernel(repeatTimes, relu_forward_kernel1,
-                                M * N / blockSize, blockSize, 0, 0,
+                benchmarkKernel(repeatTimes, relu_forward_kernel1, M * N / blockSize, blockSize, 0, 0,
                                 &elapsedTime, inputGPU, outputGPU, M, N);
                 break;
             case 2:
-                benchmarkKernel(repeatTimes, relu_forward_kernel2,
-                                M * N / blockSize, blockSize, 0, 0,
+                benchmarkKernel(repeatTimes, relu_forward_kernel2, M * N / blockSize, blockSize, 0, 0,
                                 &elapsedTime, inputGPU, outputGPU, M, N);
                 break;
             case 3:
-                benchmarkKernel(repeatTimes, relu_forward_kernel3,
-                                M * N / blockSize, blockSize, 0, 0,
+                benchmarkKernel(repeatTimes, relu_forward_kernel3, M * N / blockSize, blockSize, 0, 0,
+                                &elapsedTime, inputGPU, outputGPU, M, N);
+                break;
+            case 4:
+                benchmarkKernel(repeatTimes, relu_forward_kernel4,
+                                ceilDiv(M * N, (blockSize * Package128<float>::size)), blockSize, 0, 0,
                                 &elapsedTime, inputGPU, outputGPU, M, N);
                 break;
         }
