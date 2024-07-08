@@ -174,7 +174,7 @@ __global__ void gemm_kernel3(const float *A, const float *B, const float *C,
 
 int main(int argc, char **argv) {
     if (argc < 2) {
-        fprintf(stderr, "Usage: gemm_forward <kernel> [blockSize]\n");
+        fprintf(stderr, "Usage: gemm_forward <kernel> [blockSize] [benchmarkRepeatTimes]\n");
         return EXIT_FAILURE;
     }
     int kernel = atoi(argv[1]);

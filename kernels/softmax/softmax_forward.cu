@@ -319,7 +319,7 @@ __global__ void online_softmax_kernel5(float* __restrict__ input, float* __restr
 
 int main(int argc, char** argv) {
     if (argc < 2) {
-        fprintf(stderr, "Usage: softmax_forward <kernel> [blockSize]\n");
+        fprintf(stderr, "Usage: softmax_forward <kernel> [blockSize] [benchmarkRepeatTimes]\n");
         return EXIT_FAILURE;
     }
     int kernel = atoi(argv[1]);
