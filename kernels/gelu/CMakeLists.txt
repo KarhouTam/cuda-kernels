@@ -1,0 +1,1 @@
+add_executable(gelu_forward gelu_forward.cu)
