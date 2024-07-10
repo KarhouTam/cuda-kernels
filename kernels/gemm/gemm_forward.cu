@@ -15,8 +15,7 @@ one row of the input.
 gemm_forward_kernel2(): Used shared memory and matrix tiling.
 
 gemm_forward_kernel3(): On the base of kernel2, further let each thread handles
-computation of (stride * stride) elements of D. However, this kernel fucked up
-when M and N both larger than 512 (still don't know why).
+computation of (stride * stride) elements of D.
 
 */
 
@@ -230,6 +229,9 @@ int main(int argc, char **argv) {
             gemm_kernel3<BLOCK_SIZE_2D, STRIDE_KERNEL3>
                 <<<gridDim, blockDim>>>(AGPU, BGPU, CGPU, DGPU, M, N, K);
             break;
+        }
+        case 4: {
+
         }
         default:
             printf("Error: Invalid kernel type: %i\n", kernel);
