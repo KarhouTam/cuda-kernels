@@ -99,64 +99,70 @@ __global__ void gemm_kernel3(const float *__restrict__ const A, const float *__r
     __shared__ float sharedA[step][step + padding];
     __shared__ float sharedB[step][step + padding];
     float vals[stride][stride];
+    int row, col, r, c;
 
     // do the addition first
-    for (int r = 0; r < stride; ++r) {
-        const int row = blockIdx.y * step + threadIdx.y * stride + r;
-        for (int c = 0; c < stride; ++c) {
-            const int col = blockIdx.x * step + threadIdx.x * stride + c;
-            if (row < M && col < N) {
-                D[row * N + col] = C[row * N + col];
-            }
+#pragma unroll
+    for (int s = 0; s < stride * stride; ++s) {
+        r = s / stride;
+        c = s % stride;
+        row = blockIdx.y * step + threadIdx.y * stride + r;
+        col = blockIdx.x * step + threadIdx.x * stride + c;
+        if (row < M && col < N) {
+            D[row * N + col] = C[row * N + col];
         }
     }
 
-    for (int r = 0; r < stride; ++r) {
-        for (int c = 0; c < stride; ++c) {
-            vals[r][c] = 0.0f;
-        }
+#pragma unroll
+    for (int s = 0; s < stride * stride; ++s) {
+        r = s / stride;
+        c = s % stride;
+        vals[r][c] = 0.0f;
     }
 
     for (int k = 0; k < K; k += step) {
         // load (step, step) size of data into smem
-        for (int r = 0; r < stride; ++r) {
-            const int row = blockIdx.y * step + threadIdx.y * stride + r;
-            for (int c = 0; c < stride; ++c) {
-                const int col = blockIdx.x * step + threadIdx.x * stride + c;
-                const int smemRow = threadIdx.y * stride + r, smemCol = threadIdx.x * stride + c;
-                sharedA[smemRow][smemCol] = (k + threadIdx.x * stride + c) < K && row < M
-                                                ? A[row * K + (k + threadIdx.x * stride + c)]
-                                                : 0.0f;
-                sharedB[smemRow][smemCol] = (k + threadIdx.y * stride + r) < K && col < N
-                                                ? B[(k + threadIdx.y * stride + r) * N + col]
-                                                : 0.0f;
-            }
+#pragma unroll
+        for (int s = 0; s < stride * stride; ++s) {
+            r = s / stride;
+            c = s % stride;
+            row = blockIdx.y * step + threadIdx.y * stride + r;
+            col = blockIdx.x * step + threadIdx.x * stride + c;
+            const int smemRow = threadIdx.y * stride + r, smemCol = threadIdx.x * stride + c;
+            sharedA[smemRow][smemCol] = (k + threadIdx.x * stride + c) < K && row < M
+                                            ? A[row * K + (k + threadIdx.x * stride + c)]
+                                            : 0.0f;
+            sharedB[smemRow][smemCol] = (k + threadIdx.y * stride + r) < K && col < N
+                                            ? B[(k + threadIdx.y * stride + r) * N + col]
+                                            : 0.0f;
         }
         __syncthreads();
 
         // calculate the chunk matmul within smem
-        for (int r = 0; r < stride; ++r) {
+#pragma unroll
+        for (int s = 0; s < stride * stride; ++s) {
+            r = s / stride;
+            c = s % stride;
             int row = threadIdx.y * stride + r;
-            for (int c = 0; c < stride; ++c) {
-                int col = threadIdx.x * stride + c;
-                float val = 0.0f;
-                for (int i = 0; i < step; ++i) {
-                    val += sharedA[row][i] * sharedB[i][col];
-                }
-                vals[r][c] += val;
+            int col = threadIdx.x * stride + c;
+            float val = 0.0f;
+            for (int i = 0; i < step; ++i) {
+                val += sharedA[row][i] * sharedB[i][col];
             }
+            vals[r][c] += val;
         }
         __syncthreads();
     }
 
     // udpate final vals to the output matrix
-    for (int r = 0; r < stride; ++r) {
-        const int row = blockIdx.y * step + threadIdx.y * stride + r;
-        for (int c = 0; c < stride; ++c) {
-            const int col = blockIdx.x * step + threadIdx.x * stride + c;
-            if (row < M && col < N) {
-                D[row * N + col] += vals[r][c];
-            }
+#pragma unroll
+    for (int s = 0; s < stride * stride; ++s) {
+        r = s / stride;
+        c = s % stride;
+        row = blockIdx.y * step + threadIdx.y * stride + r;
+        col = blockIdx.x * step + threadIdx.x * stride + c;
+        if (row < M && col < N) {
+            D[row * N + col] += vals[r][c];
         }
     }
 }
