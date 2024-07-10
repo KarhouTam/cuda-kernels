@@ -20,7 +20,7 @@
 // inspired by llm.c
 // Use Package128 to store 128 bits and urge GPU to load it in one time
 template <typename T>
-struct __align__(16) Package128 {
+struct alignas(16) Package128 {
     static constexpr const int size = sizeof(float4) / sizeof(T);
     T data[size];
     Package128() = default;
