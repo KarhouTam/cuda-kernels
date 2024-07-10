@@ -95,7 +95,7 @@ __global__ void gemm_kernel3(const float *__restrict__ const A, const float *__r
     // compares to kernel2, kernel3 let each thread handles (stride * stride)
     // elements of D and results in less thread blocks
     // this version should perform better than version 2 with large matrices
-    constexpr int padding = 0; 
+    constexpr int padding = 0;
     __shared__ float sharedA[step][step + padding];
     __shared__ float sharedB[step][step + padding];
     float vals[stride][stride];
@@ -230,9 +230,6 @@ int main(int argc, char **argv) {
                 <<<gridDim, blockDim>>>(AGPU, BGPU, CGPU, DGPU, M, N, K);
             break;
         }
-        case 4: {
-
-        }
         default:
             printf("Error: Invalid kernel type: %i\n", kernel);
             return EXIT_FAILURE;
@@ -257,7 +254,6 @@ int main(int argc, char **argv) {
                                      ceilDiv(M, BLOCK_SIZE_2D * STRIDE_KERNEL3)),
                                 dim3(BLOCK_SIZE_2D, BLOCK_SIZE_2D), 0, 0, &elapsedTime, AGPU, BGPU, CGPU,
                                 DGPU, M, N, K);
-                break;
                 break;
             default:
                 printf("Error: Invalid kernel type: %i\n", kernel);
