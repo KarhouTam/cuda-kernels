@@ -140,6 +140,7 @@ __global__ void online_softmax_kernel3(float* input, float* output, const int M,
         for (int i = laneId; i < N; i += warpSize) {
             bigger = fmaxf(maxval, x[i]);
             sum = sum * expf(maxval - bigger) + expf(x[i] - bigger);
+            maxval = bigger;
         }
 
         float offsetMax, offsetSum;
