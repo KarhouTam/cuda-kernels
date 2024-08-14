@@ -188,8 +188,10 @@ __global__ void online_softmax_kernel4(float* input, float* output, const int M,
 
         // have 32 sub-max and sub-sum values hold by each lane in the same warp
         // warp reduce, get the warpwise max and sum
-        warpReduceMax(maxval);
-        warpReduceSum(sumval);
+        float maxvalOld = maxval;
+        maxval = warpReduceMax(maxval); // now maxval is warpwise maxval
+        sumval *= expf(maxvalOld - maxval);
+        sumval = warpReduceSum(sumval); // now sumval is warpwise sumval
 
         // store each warp's max and sum to smem
         if (laneId == 0) {
