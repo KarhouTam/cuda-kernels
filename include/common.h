@@ -5,7 +5,6 @@
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
-
 #define cudaErrorCheck(err)                                           \
     if (err != cudaSuccess) {                                         \
         fprintf(stderr, "CUDA error at %s:%d\n", __FILE__, __LINE__); \
@@ -142,7 +141,7 @@ __host__ __device__ inline T1 ceilDiv(T1 dividend, T2 divisor) {
 
 template <typename Kernel, typename... Args>
 void benchmarkKernel(int repeatTimes, Kernel kernel, const dim3 gridDim, const dim3 blockDim,
-                     unsigned int smemSize, CUstream_st* stream, float* totalElapsedTime, Args&&... args) {
+                     unsigned int smemSize, cudaStream_t* stream, float* totalElapsedTime, Args&&... args) {
     cudaEvent_t begin, end;
     cudaErrorCheck(cudaEventCreate(&begin));
     cudaErrorCheck(cudaEventCreate(&end));
@@ -150,7 +149,7 @@ void benchmarkKernel(int repeatTimes, Kernel kernel, const dim3 gridDim, const d
     for (int i = 0; i < repeatTimes; ++i) {
         elapsedTime = 0.0f;
         cudaEventRecord(begin);
-        kernel<<<gridDim, blockDim, smemSize, stream>>>(std::forward<Args>(args)...);
+        kernel<<<gridDim, blockDim, smemSize, (CUstream_st*)stream>>>(std::forward<Args>(args)...);
         cudaEventRecord(end);
         cudaErrorCheck(cudaEventSynchronize(begin));
         cudaErrorCheck(cudaEventSynchronize(end));
@@ -181,7 +180,7 @@ __device__ __forceinline__ T divide(const T& a, const T& b) {
 
 template <typename Kernel, typename... Args>
 void benchmarkKernel(int repeatTimes, Kernel kernel, const int gridSize, const int blockSize,
-                     unsigned int smemSize, CUstream_st* stream, float* totalElapsedTime, Args&&... args) {
+                     unsigned int smemSize, cudaStream_t* stream, float* totalElapsedTime, Args&&... args) {
     benchmarkKernel(repeatTimes, kernel, dim3(gridSize), dim3(blockSize), smemSize, stream,
                     totalElapsedTime, std::forward<Args>(args)...);
 }

@@ -19,7 +19,7 @@ computation of (stride * stride) elements of D.
 
 */
 
-void gemm_cpu(const float *A, const float *B, const float *C, float *const D, const int M, const int N,
+void gemm_cpu(const float* A, const float* B, const float* C, float* const D, const int M, const int N,
               const int K) {
     // D = A * B + C
     // A: M x K
@@ -37,7 +37,7 @@ void gemm_cpu(const float *A, const float *B, const float *C, float *const D, co
     }
 }
 
-__global__ void gemm_kernel1(const float *A, const float *B, const float *C, float *const D, const int M,
+__global__ void gemm_kernel1(const float* A, const float* B, const float* C, float* const D, const int M,
                              const int N, const int K) {
     // naive implementation
     // each thread calculates one row of D (M rows in total, one row has N
@@ -51,8 +51,9 @@ __global__ void gemm_kernel1(const float *A, const float *B, const float *C, flo
         D[m * N + n] = val + C[m * N + n];
     }
 }
+
 template <int blockSize>
-__global__ void gemm_kernel2(const float *A, const float *B, const float *C, float *const D, const int M,
+__global__ void gemm_kernel2(const float* A, const float* B, const float* C, float* const D, const int M,
                              const int N, const int K) {
     __shared__ float sharedA[blockSize][blockSize];
     __shared__ float sharedB[blockSize][blockSize];
@@ -88,8 +89,8 @@ __global__ void gemm_kernel2(const float *A, const float *B, const float *C, flo
 }
 
 template <int blockSize, int stride, int step = blockSize * stride>
-__global__ void gemm_kernel3(const float *__restrict__ const A, const float *__restrict__ const B,
-                             const float *__restrict__ const C, float *__restrict__ const D, const int M,
+__global__ void gemm_kernel3(const float* __restrict__ const A, const float* __restrict__ const B,
+                             const float* __restrict__ const C, float* __restrict__ const D, const int M,
                              const int N, const int K) {
     // add __restrict__ for guiding further compile optimization
     // compares to kernel2, kernel3 let each thread handles (stride * stride)
@@ -175,7 +176,7 @@ __global__ void gemm_kernel3(const float *__restrict__ const A, const float *__r
 #define STRIDE_KERNEL3 2
 #define REPEAT_TIMES 100
 
-int main(int argc, char **argv) {
+int main(int argc, char** argv) {
     if (argc < 2) {
         fprintf(stderr, "Usage: gemm_forward <kernel> [blockSize] [benchmarkRepeatTimes]\n");
         return EXIT_FAILURE;
@@ -191,11 +192,11 @@ int main(int argc, char **argv) {
         repeatTimes = atoi(argv[3]);
     }
 
-    float *A = (float *)malloc(M * K * sizeof(float));
-    float *B = (float *)malloc(K * N * sizeof(float));
-    float *C = (float *)malloc(M * N * sizeof(float));
-    float *D = (float *)malloc(M * N * sizeof(float));
-    float *resFromGPU = (float *)malloc(M * N * sizeof(float));
+    float* A = (float*)malloc(M * K * sizeof(float));
+    float* B = (float*)malloc(K * N * sizeof(float));
+    float* C = (float*)malloc(M * N * sizeof(float));
+    float* D = (float*)malloc(M * N * sizeof(float));
+    float* resFromGPU = (float*)malloc(M * N * sizeof(float));
     initArrFloat(A, M * K);
     initArrFloat(B, K * N);
     initArrFloat(C, M * N);
@@ -213,7 +214,7 @@ int main(int argc, char **argv) {
 
     cudaErrorCheck(cudaMalloc(&DGPU, M * N * sizeof(float)));
 
-    float elapsedTime;
+    float elapsedTime = 0.0f;
     gemm_cpu(A, B, C, D, M, N, K);
 
     switch (kernel) {

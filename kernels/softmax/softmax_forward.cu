@@ -372,7 +372,7 @@ int main(int argc, char** argv) {
     cudaErrorCheck(cudaDeviceSynchronize());
     cudaErrorCheck(cudaMemcpy(resFromGPU, outputGPU, M * N * sizeof(float), cudaMemcpyDeviceToHost));
 
-    float elapsedTime;
+    float elapsedTime = 0.0f;
     if (checkResults(output, resFromGPU, M * N)) {
         switch (kernel) {
             case 1:

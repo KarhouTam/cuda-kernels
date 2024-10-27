@@ -424,7 +424,7 @@ int main(int argc, char **argv) {
     cudaErrorCheck(cudaMalloc(&outputGPU, B * T * C * sizeof(float)));
     cudaErrorCheck(cudaMemset(outputGPU, 0, B * T * C * sizeof(float)));
 
-    float elapsedTime;
+    float elapsedTime = 0.0f;
 
     layernorm_forward_cpu(input, output, weight, bias, EPS, B, T, C);
 

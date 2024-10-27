@@ -131,7 +131,7 @@ int main(int argc, char** argv) {
     cudaErrorCheck(cudaMemcpy(inputGPU, input, M * N * sizeof(float), cudaMemcpyHostToDevice));
     cudaErrorCheck(cudaMalloc(&outputGPU, M * N * sizeof(float)));
 
-    float elapsedTime;
+    float elapsedTime = 0.0f;
 
     relu_cpu(input, output, M, N);
 
