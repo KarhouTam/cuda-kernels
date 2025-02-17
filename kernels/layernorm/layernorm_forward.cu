@@ -254,16 +254,16 @@ __global__ void layernorm_forward_kernel6(float *input, float *output, float *we
                 float xi = x[i];
                 xSharedWarp[i] = xi;
                 partialSum += xi;
-                partialSum += xi * xi;
+                partialSum2 += xi * xi;
             }
 
             float mean = warpReduceSum(partialSum) / C;
             float mean2 = warpReduceSum(partialSum2) / C;
             float var = (mean2 - mean * mean);
-            float inv_std = 1.0f / sqrt(var / C + eps);
+            float inv_std = rsqrtf(var + eps);
 
             for (int i = laneId; i < C; i += warpSize) {
-                y[i] = weight[i] * (sharedX[i] - mean) * inv_std + bias[i];
+                y[i] = weight[i] * (xSharedWarp[i] - mean) * inv_std + bias[i];
             }
         }
 }
