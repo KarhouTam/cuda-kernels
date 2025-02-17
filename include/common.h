@@ -41,7 +41,7 @@ struct alignas(16) Package128 {
     }
     __device__ static Package128<T> zeros() { return constant((T)0); }
     __device__ static Package128<T> ones() { return constant((T)1); }
-    __device__ float4 getBits() {
+    __device__ float4 getBits() const {
         float4 bits;
         static_assert(sizeof(float4) == sizeof(T) * size);
         memcpy(&bits, &data, sizeof(bits));
@@ -83,7 +83,7 @@ void ones(T* arr, const int N) {
 
 template <typename T>
 void zeros(T* arr, const int N) {
-    constant(arr, N, (T)1);
+    constant(arr, N, (T)0);
 }
 
 void initArrFloat(float* arr, const int N) {
