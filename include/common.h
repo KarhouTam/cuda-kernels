@@ -103,7 +103,7 @@ void initArrInt(int* arr, const int N) {
 bool checkResults(float* resCPU, float* resFromGPU, const int N) {
     float tolerance = 1e-4f;
     for (int i = 0; i < N; i++) {
-        if (abs(resFromGPU[i] - resCPU[i]) > tolerance) {
+        if (isnan(resFromGPU[i]) || abs(resFromGPU[i] - resCPU[i]) > tolerance) {
             printf("checkResultsError: %f != %f, index: %i\n", resCPU[i], resFromGPU[i], i);
             return false;
         }
