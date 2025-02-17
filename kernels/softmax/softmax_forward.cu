@@ -127,6 +127,7 @@ __global__ void softmax_kernel2(float* input, float* output, const int M, const 
 }
 
 __global__ void online_softmax_kernel3(float* input, float* output, const int M, const int N) {
+    //  one warp per row
     const int tid = threadIdx.x;
     const int warpId = tid / warpSize;
     const int laneId = tid % warpSize;
@@ -136,15 +137,16 @@ __global__ void online_softmax_kernel3(float* input, float* output, const int M,
     for (int m = idx; m < M; m += numWarps) {
         const float* x = input + m * N;
         float* const y = output + m * N;
-        float maxval = -INFINITY, sum = 0.0f, bigger;
+        float maxval = -INFINITY, sum = 0.0f;
         for (int i = laneId; i < N; i += warpSize) {
-            bigger = fmaxf(maxval, x[i]);
-            sum = sum * expf(maxval - bigger) + expf(x[i] - bigger);
+            float xi = x[i];
+            float newMax = fmaxf(maxval, xi);
+            sum = sum * expf(maxval - newMax) + expf(xi - newMax);
+            maxval = newMax;
         }
 
         float offsetMax, offsetSum;
         for (int offset = warpSize / 2; offset > 0; offset >>= 1) {
-            __syncwarp();
             offsetMax = __shfl_xor_sync(0xFFFFFFFF, maxval, offset);
             offsetSum = __shfl_xor_sync(0xFFFFFFFF, sum, offset);
             if (offsetMax > maxval) {
@@ -162,79 +164,79 @@ __global__ void online_softmax_kernel3(float* input, float* output, const int M,
 }
 
 __global__ void online_softmax_kernel4(float* input, float* output, const int M, const int N) {
-    // further, each block handles one row
-    if (blockIdx.x < M) {
-        extern __shared__ float shared[];
-        const int laneId = threadIdx.x % warpSize;
-        const int warpId = threadIdx.x / warpSize;
-        const int warpsPerBlock = ceilDiv(blockDim.x, warpSize);
-        const int dataPerWarp = ceilDiv(N, warpsPerBlock);
-        const int start = dataPerWarp * warpId;
-        const int end = min((warpId + 1) * dataPerWarp, N);
-        const float* x = input + blockIdx.x * N;
-        float* const y = output + blockIdx.x * N;
+    // one block per row
+    extern __shared__ float shared[];
+    const int laneId = threadIdx.x % warpSize;
+    const int warpId = threadIdx.x / warpSize;
+    const int warpsPerBlock = ceilDiv(blockDim.x, warpSize);
+    const int dataPerWarp = ceilDiv(N, warpsPerBlock);
+    const int start = dataPerWarp * warpId;
+    const int end = min((warpId + 1) * dataPerWarp, N);
+    const float* x = input + blockIdx.x * N;
+    float* const y = output + blockIdx.x * N;
 
-        float* const maxVals = shared;
-        float* const sumVals = shared + warpsPerBlock;
+    float* const maxVals = shared;
+    float* const sumVals = shared + warpsPerBlock;
 
-        // each lane calculates its own max and sum
-        float maxval = -INFINITY, sumval = 0.f;
-        for (int i = start + laneId; i < end; i += warpSize) {
-            float newLaneMax = fmaxf(maxval, x[i]);
-            sumval = sumval * expf(maxval - newLaneMax) + expf(x[i] - newLaneMax);
-            maxval = newLaneMax;
+    // Initialize maxval and sumval properly
+    float maxval = -INFINITY, sumval = 0.f;
+
+    // First pass: compute max and sum for this warp's data range
+    for (int i = start + laneId; i < end; i += warpSize) {
+        float xi = x[i];
+        float newMax = fmaxf(maxval, xi);
+        sumval = sumval * expf(maxval - newMax) + expf(xi - newMax);
+        maxval = newMax;
+    }
+
+    // Warp reduction to get warp-level max and sum
+    float warpMaxval = warpReduceMax(maxval);
+    sumval *= expf(maxval - warpMaxval);
+    float warpSumval = warpReduceSum(sumval);
+
+    // Store warp results to shared memory
+    if (laneId == 0) {
+        maxVals[warpId] = warpMaxval;
+        sumVals[warpId] = warpSumval;
+    }
+    __syncthreads();
+
+    // Block reduction using warp 0
+    if (warpId == 0) {
+        maxval = (laneId < warpsPerBlock) ? maxVals[laneId] : -INFINITY;
+        sumval = (laneId < warpsPerBlock) ? sumVals[laneId] : 0.0f;
+
+        // Reduce across warps
+        for (int offset = warpSize / 2; offset > 0; offset >>= 1) {
+            float otherMax = __shfl_xor_sync(0xFFFFFFFF, maxval, offset);
+            float otherSum = __shfl_xor_sync(0xFFFFFFFF, sumval, offset);
+
+            if (maxval < otherMax) {
+                sumval *= expf(maxval - otherMax);
+                maxval = otherMax;
+            } else if (maxval > otherMax) {
+                otherSum *= expf(otherMax - maxval);
+            }
+            sumval += otherSum;
         }
 
-        // have 32 sub-max and sub-sum values hold by each lane in the same warp
-        // warp reduce, get the warpwise max and sum
-        warpReduceMax(maxval);
-        warpReduceSum(sumval);
-
-        // store each warp's max and sum to smem
+        // First thread writes final results
         if (laneId == 0) {
-            maxVals[warpId] = maxval;
-            sumVals[warpId] = sumval;
-        }
-        __syncthreads();
-        // re-init for the next block reduce process
-
-        // let warp 0 do the block reduce
-        if (warpId == 0) {
-            if (laneId < warpsPerBlock) {
-                maxval = maxVals[laneId];
-                sumval = sumVals[laneId];
-            } else {
-                maxval = -INFINITY;
-                sumval = 0.f;
-            }
-            for (int offset = warpSize / 2; offset > 0; offset >>= 1) {
-                float otherMax = __shfl_xor_sync(0xFFFFFFFF, maxval, offset);
-                float otherSum = __shfl_xor_sync(0xFFFFFFFF, sumval, offset);
-                if (maxval < otherMax) {
-                    sumval = sumval * expf(maxval - otherMax) + otherSum;
-                    maxval = otherMax;
-                } else {
-                    sumval += otherSum * expf(otherMax - maxval);
-                }
-            }
-        }
-        __syncthreads();
-
-        // update the blockwise sum and max to smem
-        if (warpId == 0 && laneId == 0) {
             maxVals[0] = maxval;
             sumVals[0] = sumval;
         }
-        __syncthreads();
+    }
+    __syncthreads();
 
-        // warps take the blockwise max and sum and do the final calculation
-        float blockSum = sumVals[0], blockMax = maxVals[0];
-        for (int i = start + laneId; i < end; i += 32) {
-            y[i] = expf(x[i] - blockMax) / blockSum;
-        }
+    // Final computation using block-wide max and sum
+    float blockMax = maxVals[0];
+    float blockSum = sumVals[0];
+
+    // Write final results
+    for (int i = start + laneId; i < end; i += warpSize) {
+        y[i] = expf(x[i] - blockMax) / blockSum;
     }
 }
-
 __global__ void online_softmax_kernel5(float* __restrict__ input, float* __restrict__ output, const int M,
                                        const int N) {
     // this kernel is f*cking faster than any other kernels!
