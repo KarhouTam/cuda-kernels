@@ -168,9 +168,9 @@ __global__ void gemm_kernel3(const float* __restrict__ const A, const float* __r
     }
 }
 
-#define M 1024
-#define K 1024
-#define N 1024
+#define M 256
+#define K 512
+#define N 256
 #define BLOCK_SIZE_1D 256
 #define BLOCK_SIZE_2D 16
 #define STRIDE_KERNEL3 2
