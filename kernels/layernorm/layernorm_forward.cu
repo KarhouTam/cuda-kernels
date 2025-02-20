@@ -2,6 +2,7 @@
 #include <cooperative_groups/reduce.h>
 
 #include <cassert>
+#include <cub/cub.cuh>
 
 #include "common.h"
 
@@ -377,6 +378,65 @@ __global__ void layernorm_forward_kernel8(float *__restrict__ input, float *__re
     }
 }
 
+__global__ void layernorm_forward_kernel9(float *__restrict__ input, float *__restrict__ output,
+                                          float *__restrict__ weight, float *__restrict__ bias, float eps,
+                                          int B, int T, int C) {
+    // block reduce
+    int tid = threadIdx.x;
+    int warpId = tid / warpSize;
+    int laneId = tid % warpSize;
+    int warpsPerBlock = ceilDiv(blockDim.x, warpSize);
+    int dataPerWarp = ceilDiv(C, warpsPerBlock);
+    int dataPerLane = ceilDiv(dataPerWarp, warpSize);
+    int start = dataPerWarp * warpId + dataPerLane * laneId;
+    int end = min(start + dataPerLane, C);
+    extern __shared__ float sharedMem[];
+    float *invStdShared = sharedMem;
+    float *meanShared = invStdShared + 1;
+    float *xSumShared = meanShared + 1;
+    float *xSum2Shared = xSumShared + warpsPerBlock;
+    float *xShared = xSum2Shared + warpsPerBlock;
+    int row = blockIdx.x;
+    float *x = input + row * C;
+    float *y = output + row * C;
+    float laneSum = 0.f;
+    float laneSum2 = 0.f;
+    for (int i = start; i < end; ++i) {
+        float xi = x[i];
+        xShared[i] = xi;
+        laneSum += xi;
+        laneSum2 += xi * xi;
+    }
+    float warpSum = warpReduceSum(laneSum);
+    float warpSum2 = warpReduceSum(laneSum2);
+    if (laneId == 0) {
+        xSumShared[warpId] = warpSum;
+        xSum2Shared[warpId] = warpSum2;
+    }
+    __syncthreads();
+    if (warpId == 0) {
+        float sum = laneId < warpsPerBlock ? xSumShared[laneId] : 0.f;
+        float sum2 = laneId < warpsPerBlock ? xSum2Shared[laneId] : 0.f;
+        float blockSum = warpReduceSum(sum);
+        float blockSum2 = warpReduceSum(sum2);
+        float mean = blockSum / C;
+        float mean2 = blockSum2 / C;
+        float var = mean2 - mean * mean;
+
+        if (laneId == 0) {
+            *meanShared = mean;
+            *invStdShared = rsqrtf(var + eps);
+        }
+    }
+    __syncthreads();
+
+    float mean = *meanShared;
+    float invStd = *invStdShared;
+    for (int i = start; i < end; ++i) {
+        y[i] = weight[i] * invStd * (xShared[i] - mean) + bias[i];
+    }
+}
+
 #define B 8
 #define T 1024
 #define C 768
@@ -468,6 +528,13 @@ int main(int argc, char **argv) {
                 inputGPU, outputGPU, weightGPU, biasGPU, EPS, B, T, C);
             break;
         }
+        case 9: {
+            const int smemSize =
+                sizeof(float) * (2 + 2 * ceilDiv(blockSize, 32) + C);  // 2 for invStdShared, meanShared
+            layernorm_forward_kernel9<<<B * T, blockSize, smemSize>>>(inputGPU, outputGPU, weightGPU,
+                                                                      biasGPU, EPS, B, T, C);
+            break;
+        }
         default:
             printf("Error: Invalid kernel type: %i\n", kernel);
             return EXIT_FAILURE;
@@ -513,6 +580,11 @@ int main(int argc, char **argv) {
                 benchmarkKernel(repeatTimes, layernorm_forward_kernel8, ceilDiv(B * T * 32, blockSize),
                                 blockSize, blockSize / 32 * C * sizeof(float), 0, &elapsedTime, inputGPU,
                                 outputGPU, weightGPU, biasGPU, EPS, B, T, C);
+                break;
+            case 9:
+                benchmarkKernel(repeatTimes, layernorm_forward_kernel9, ceilDiv(B * T, blockSize),
+                                blockSize, sizeof(float) * (2 + 2 * ceilDiv(blockSize, 32) + C), 0,
+                                &elapsedTime, inputGPU, outputGPU, weightGPU, biasGPU, EPS, B, T, C);
                 break;
         }
         printf(
