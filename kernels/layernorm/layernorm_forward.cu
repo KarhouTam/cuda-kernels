@@ -28,11 +28,14 @@ store the intermediate shift values (x - mean).
 layernorm_forward_kernel5(): On the base of kernel2, using formula D(X) = E(X^2)
 - E(X)^2 to reduce the number of loops.
 
-layernorm_forward_kernel6(): use D(X) = E(X^2) and smem to acclerate memory access.
+layernorm_forward_kernel6(): Block-level reduction implementation using shared memory.
+Each block handles one row, with efficient memory access patterns and reduced
+synchronization overhead. Uses a two-phase reduction approach with shared memory
+for intermediate results.
 
-layernorm_forward_kernel7(): block reduce version.
-
-layernorm_forward_kernel8(): on the base of kernel 6, plus using float4.
+layernorm_forward_kernel7(): Advanced implementation using Welford's online algorithm
+for numerically stable mean and variance computation. Uses hierarchical reduction
+with warp-level primitives and shared memory for optimal performance.
 
 */
 
@@ -234,151 +237,7 @@ __global__ void layernorm_forward_kernel5(float *input, float *output, float *we
         }
 }
 
-__global__ void layernorm_forward_kernel6(float *input, float *output, float *weight, float *bias,
-                                          float eps, int B, int T, int C) {
-    // one warp one row
-    // use smem to store the shift (x - mean) values
-    // use D(X) = E(X^2) - E(X)^2
-    assert((C % warpSize) == 0);
-    extern __shared__ float sharedX[];
-    int warpsPerBlock = blockDim.x / warpSize;
-    int warpId = threadIdx.x / warpSize;
-    int laneId = threadIdx.x % warpSize;
-    int numWarps = gridDim.x * warpsPerBlock;
-    float *const xSharedWarp = sharedX + warpId * C;
-    for (int row = blockIdx.x * warpsPerBlock + warpId; row < B * T; row += numWarps)
-        if (row < B * T) {
-            float *const x = input + row * C;
-            float *const y = output + row * C;
-            float partialSum = 0.0f, partialSum2 = 0.0f;
-            for (int i = laneId; i < C; i += warpSize) {
-                float xi = x[i];
-                xSharedWarp[i] = xi;
-                partialSum += xi;
-                partialSum2 += xi * xi;
-            }
-
-            float mean = warpReduceSum(partialSum) / C;
-            float mean2 = warpReduceSum(partialSum2) / C;
-            float var = (mean2 - mean * mean);
-            float inv_std = rsqrtf(var + eps);
-
-            for (int i = laneId; i < C; i += warpSize) {
-                y[i] = weight[i] * (xSharedWarp[i] - mean) * inv_std + bias[i];
-            }
-        }
-}
-
-__global__ void layernorm_forward_kernel7(float *input, float *output, float *weight, float *bias,
-                                          float eps, int B, int T, int C) {
-    extern __shared__ float shared[];
-    if (blockIdx.x < B * T) {
-        const int laneId = threadIdx.x % warpSize;
-        const int warpId = threadIdx.x / warpSize;
-        const int warpsPerBlock = ceilDiv(blockDim.x, warpSize);
-        const int dataPerWarp = ceilDiv(C, warpsPerBlock);
-        const int start = dataPerWarp * warpId;
-        const int end = min((warpId + 1) * dataPerWarp, C);
-
-        float *const smem1 = shared;
-        float *const smem2 = shared + warpsPerBlock;
-
-        const float *x = input + blockIdx.x * C;
-        float *const y = output + blockIdx.x * C;
-
-        float sumVal = 0.f, sum2Val = 0.f;
-        for (int i = start + laneId; i < end; i += warpSize) {
-            float xi = x[i];
-            sumVal += xi;
-            sum2Val += xi * xi;
-        }
-
-        sumVal = warpReduceSum(sumVal);
-        sum2Val = warpReduceSum(sum2Val);
-        if (laneId == 0) {
-            smem1[warpId] = sumVal;
-            smem2[warpId] = sum2Val;
-        }
-        __syncthreads();
-
-        if (warpId == 0) {
-            if (laneId < warpsPerBlock) {
-                sumVal = smem1[laneId];
-                sum2Val = smem2[laneId];
-            } else {
-                sumVal = 0.f;
-                sum2Val = 0.f;
-            }
-            sumVal = warpReduceSum(sumVal);
-            sum2Val = warpReduceSum(sum2Val);
-            if (laneId == 0) {
-                smem1[0] = sumVal / C;
-                smem2[0] = sum2Val / C;
-            }
-        }
-        __syncthreads();
-
-        float mean1 = smem1[0];
-        float mean2 = smem2[0];
-
-        float var = (mean2 - mean1 * mean1);
-        float invStd = rsqrtf(var + eps);
-
-        for (int i = start + laneId; i < end; i += warpSize) {
-            float xi = x[i];
-            y[i] = weight[i] * (xi - mean1) * invStd + bias[i];
-        }
-    }
-}
-
-__global__ void layernorm_forward_kernel8(float *__restrict__ input, float *__restrict__ output,
-                                          float *__restrict__ weight, float *__restrict__ bias, float eps,
-                                          int B, int T, int C) {
-    // using formula D(X) = E(X^2) - E(X)^2 to reduce the number of loops
-    // while using smem to store input data
-    // and use float4 to acclerate memory access
-    using f128 = Package128<float>;
-    extern __shared__ f128 xShared[];
-    int warpsPerBlock = blockDim.x / warpSize;
-    int warpId = threadIdx.x / warpSize;
-    int laneId = threadIdx.x % warpSize;
-    f128 *xSharedWarp = xShared + warpId * (C / f128::size);
-    int row = blockIdx.x * warpsPerBlock + warpId;
-    if (row < B * T) {
-        float *x = input + row * C;
-        float *y = output + row * C;
-        float warpSum = 0.0f;
-        float warpSum2 = 0.0f;
-        for (int i = laneId * f128::size; i < C; i += warpSize * f128::size) {
-            f128 xi = load128(x + i);
-            xSharedWarp[i / f128::size] = xi;
-            for (int k = 0; k < f128::size; ++k) {
-                warpSum += xi[k];
-                warpSum2 += xi[k] * xi[k];
-            }
-        }
-
-        float mean = warpReduceSum(warpSum) / C;
-        float mean2 = warpReduceSum(warpSum2) / C;
-
-        float var = (mean2 - mean * mean);
-        float inv_std = rsqrtf(var + eps);
-
-        for (int i = laneId * f128::size; i < C; i += warpSize * f128::size) {
-            f128 packedW = load128(weight + i);
-            f128 packedB = load128(bias + i);
-            f128 packedX = xSharedWarp[i / f128::size];
-            f128 out;
-#pragma unroll
-            for (int k = 0; k < f128::size; ++k) {
-                out[k] = packedW[k] * inv_std * ((float)packedX[k] - mean) + packedB[k];
-            }
-            store128(y + i, out);
-        }
-    }
-}
-
-__global__ void layernorm_forward_kernel9(float *__restrict__ input, float *__restrict__ output,
+__global__ void layernorm_forward_kernel6(float *__restrict__ input, float *__restrict__ output,
                                           float *__restrict__ weight, float *__restrict__ bias, float eps,
                                           int B, int T, int C) {
     // block reduce
@@ -434,6 +293,118 @@ __global__ void layernorm_forward_kernel9(float *__restrict__ input, float *__re
     float invStd = *invStdShared;
     for (int i = start; i < end; ++i) {
         y[i] = weight[i] * invStd * (xShared[i] - mean) + bias[i];
+    }
+}
+
+__global__ void layernorm_forward_kernel7(float *__restrict__ input, float *__restrict__ output,
+                                          float *__restrict__ weight, float *__restrict__ bias, float eps,
+                                          int B, int T, int C) {
+    const int tid = threadIdx.x;
+    const int warpId = tid / warpSize;
+    const int laneId = tid % warpSize;
+    const int warpsPerBlock = blockDim.x / warpSize;
+    const int dataPerWarp = ceilDiv(C, warpsPerBlock);
+    const int start = dataPerWarp * warpId;
+    const int end = min((warpId + 1) * dataPerWarp, C);
+
+    extern __shared__ float shared[];
+    // Shared memory layout: [means, m2s, counts, xData]
+    float *means = shared;                             // warpsPerBlock elements
+    float *m2s = means + warpsPerBlock;                // warpsPerBlock elements
+    int *counts = (int *)(m2s + warpsPerBlock);        // warpsPerBlock elements
+    float *xData = (float *)(counts + warpsPerBlock);  // C elements
+
+    const int row = blockIdx.x;
+    float *const x = input + row * C;
+    float *const y = output + row * C;
+
+    // Initialize Welford's algorithm for this thread
+    float mean = 0.0f;
+    float m2 = 0.0f;
+    int count = 0;
+
+    // Load data and compute local mean/variance
+    for (int i = start + laneId; i < end; i += warpSize) {
+        float xi = x[i];
+        xData[i] = xi;  // Store in shared memory for later use
+        count++;
+
+        // Welford's online update
+        float delta = xi - mean;
+        mean += delta / count;
+        float delta2 = xi - mean;
+        m2 += delta * delta2;
+    }
+
+// Warp reduction for Welford's statistics
+#pragma unroll
+    for (int offset = warpSize / 2; offset > 0; offset /= 2) {
+        int n1 = count;
+        int n2 = __shfl_xor_sync(0xffffffff, n1, offset);
+        float mean2 = __shfl_xor_sync(0xffffffff, mean, offset);
+        float m22 = __shfl_xor_sync(0xffffffff, m2, offset);
+
+        // Combine parallel Welford
+        if (n2 > 0) {
+            float delta = mean2 - mean;
+            mean = mean + (delta * n2) / (n1 + n2);
+            m2 = m2 + m22 + (delta * delta * n1 * n2) / (n1 + n2);
+            count = n1 + n2;
+        }
+    }
+
+    // Store warp results to shared memory
+    if (laneId == 0) {
+        means[warpId] = mean;
+        m2s[warpId] = m2;
+        counts[warpId] = count;
+    }
+    __syncthreads();
+
+    // Block reduction using first warp
+    if (warpId == 0) {
+        if (laneId < warpsPerBlock) {
+            mean = means[laneId];
+            m2 = m2s[laneId];
+            count = counts[laneId];
+        } else {
+            mean = 0.0f;
+            m2 = 0.0f;
+            count = 0;
+        }
+
+// Combine results from all warps
+#pragma unroll
+        for (int offset = warpSize / 2; offset > 0; offset /= 2) {
+            int n1 = count;
+            int n2 = __shfl_xor_sync(0xffffffff, n1, offset);
+            float mean2 = __shfl_xor_sync(0xffffffff, mean, offset);
+            float m22 = __shfl_xor_sync(0xffffffff, m2, offset);
+
+            if (n2 > 0) {
+                float delta = mean2 - mean;
+                mean = mean + (delta * n2) / (n1 + n2);
+                m2 = m2 + m22 + (delta * delta * n1 * n2) / (n1 + n2);
+                count = n1 + n2;
+            }
+        }
+
+        // Store final results
+        if (laneId == 0) {
+            means[0] = mean;
+            m2s[0] = m2 / C;  // Convert M2 to variance
+        }
+    }
+    __syncthreads();
+
+    // Get final mean and variance
+    float finalMean = means[0];
+    float variance = m2s[0];
+    float invStd = rsqrtf(variance + eps);
+
+    // Apply normalization
+    for (int i = start + laneId; i < end; i += warpSize) {
+        y[i] = weight[i] * (xData[i] - finalMean) * invStd + bias[i];
     }
 }
 
@@ -512,26 +483,17 @@ int main(int argc, char **argv) {
                                                                              biasGPU, EPS, B, T, C);
             break;
         case 6: {
-            int smemSize = C * sizeof(float) * (blockSize / 32);
-            layernorm_forward_kernel6<<<B * T * 32 / blockSize, blockSize, smemSize>>>(
-                inputGPU, outputGPU, weightGPU, biasGPU, EPS, B, T, C);
+            const int smemSize =
+                sizeof(float) * (2 + 2 * ceilDiv(blockSize, 32) + C);  // 2 for invStdShared, meanShared
+            layernorm_forward_kernel6<<<B * T, blockSize, smemSize>>>(inputGPU, outputGPU, weightGPU,
+                                                                      biasGPU, EPS, B, T, C);
             break;
         }
         case 7: {
-            layernorm_forward_kernel7<<<B * T, blockSize, ceilDiv(blockSize, 32) * 2 * sizeof(float)>>>(
-                inputGPU, outputGPU, weightGPU, biasGPU, EPS, B, T, C);
-            break;
-        }
-        case 8: {
-            const int smemSize = blockSize / 32 * C * sizeof(float);
-            layernorm_forward_kernel8<<<B * T * 32 / blockSize, blockSize, smemSize>>>(
-                inputGPU, outputGPU, weightGPU, biasGPU, EPS, B, T, C);
-            break;
-        }
-        case 9: {
-            const int smemSize =
-                sizeof(float) * (2 + 2 * ceilDiv(blockSize, 32) + C);  // 2 for invStdShared, meanShared
-            layernorm_forward_kernel9<<<B * T, blockSize, smemSize>>>(inputGPU, outputGPU, weightGPU,
+            const int smemSize = sizeof(float) * (2 * ceilDiv(blockSize, 32)) +  // means and m2s
+                                 sizeof(int) * ceilDiv(blockSize, 32) +          // counts
+                                 sizeof(float) * C;  // 2 for invStdShared, meanShared
+            layernorm_forward_kernel7<<<B * T, blockSize, smemSize>>>(inputGPU, outputGPU, weightGPU,
                                                                       biasGPU, EPS, B, T, C);
             break;
         }
@@ -569,22 +531,16 @@ int main(int argc, char **argv) {
                                 B, T, C);
                 break;
             case 6:
-                benchmarkKernel(repeatTimes, layernorm_forward_kernel6, ceilDiv(B * T * 32, blockSize),
-                                blockSize, blockSize / 32 * C * sizeof(float), 0, &elapsedTime, inputGPU,
-                                outputGPU, weightGPU, biasGPU, EPS, B, T, C);
-            case 7:
-                benchmarkKernel(repeatTimes, layernorm_forward_kernel7, B * T, blockSize,
-                                ceilDiv(blockSize, 32) * 2 * sizeof(float), 0, &elapsedTime, inputGPU,
-                                outputGPU, weightGPU, biasGPU, EPS, B, T, C);
-            case 8:
-                benchmarkKernel(repeatTimes, layernorm_forward_kernel8, ceilDiv(B * T * 32, blockSize),
-                                blockSize, blockSize / 32 * C * sizeof(float), 0, &elapsedTime, inputGPU,
-                                outputGPU, weightGPU, biasGPU, EPS, B, T, C);
-                break;
-            case 9:
-                benchmarkKernel(repeatTimes, layernorm_forward_kernel9, ceilDiv(B * T, blockSize),
+                benchmarkKernel(repeatTimes, layernorm_forward_kernel6, ceilDiv(B * T, blockSize),
                                 blockSize, sizeof(float) * (2 + 2 * ceilDiv(blockSize, 32) + C), 0,
                                 &elapsedTime, inputGPU, outputGPU, weightGPU, biasGPU, EPS, B, T, C);
+                break;
+            case 7:
+                benchmarkKernel(repeatTimes, layernorm_forward_kernel7, ceilDiv(B * T, blockSize),
+                                blockSize,
+                                sizeof(float) * (2 * ceilDiv(blockSize, 32)) +
+                                    sizeof(int) * ceilDiv(blockSize, 32) + sizeof(float) * C,
+                                0, &elapsedTime, inputGPU, outputGPU, weightGPU, biasGPU, EPS, B, T, C);
                 break;
         }
         printf(
