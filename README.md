@@ -9,5 +9,6 @@ Some records of personal CUDA kernel implementations. These implementations are 
 - GeLU
 - GEMM
 - LayerNorm
+- Self Attention
 
 More kernels are coming...
