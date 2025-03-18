@@ -189,7 +189,7 @@ int main(int argc, char** argv) {
                 break;
         }
         printf(
-            "softmax_forward kernel: %i | matrixSize: %i x %i | Times: "
+            "gelu_forward kernel: %i | matrixSize: %i x %i | Times: "
             "%f ms | "
             "blockSize: %i\n",
             kernel, M, N, elapsedTime, blockSize);
