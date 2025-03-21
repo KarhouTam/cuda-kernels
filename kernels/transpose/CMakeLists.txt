@@ -1,0 +1,1 @@
+add_executable(transpose_forward transpose_forward.cu)

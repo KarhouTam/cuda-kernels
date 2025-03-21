@@ -8,7 +8,8 @@ Some records of personal CUDA kernel implementations. These implementations are 
 - ReLU
 - GeLU
 - GEMM
-- LayerNorm
-- Self Attention
+- Layer Normalization
+- Multi Head Self Attention
+- Matrix Transpose
 
 More kernels are coming...
