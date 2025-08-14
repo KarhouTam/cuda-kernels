@@ -11,5 +11,6 @@ Some records of personal CUDA kernel implementations. These implementations are 
 - Layer Normalization
 - Multi Head Self Attention
 - Matrix Transpose
+- Multiple Tensor Apply (e.g., Addition)
 
 More kernels are coming...

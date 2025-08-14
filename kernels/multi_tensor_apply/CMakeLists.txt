@@ -1,0 +1,1 @@
+add_executable(multi_tensor_apply multi_tensor_apply.cu)
