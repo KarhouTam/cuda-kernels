@@ -63,5 +63,5 @@ print(prof.key_averages().table(sort_by="cuda_time_total", row_limit=10))
 print("=" * 60, "Custom Softmax", "=" * 60)
 with torch.autograd.profiler.profile(use_cuda=True) as prof:
     # customs.softmax(data) # directly calling the kernel would let the profiler ignore it.
-    custom_softmax(data) # so we need to wrap the kernel by torch.autograd.Function
+    custom_softmax(data)  # so we need to wrap the kernel by torch.autograd.Function
 print(prof.key_averages().table(sort_by="cuda_time_total", row_limit=10))
