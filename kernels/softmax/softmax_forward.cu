@@ -378,7 +378,7 @@ int main(int argc, char** argv) {
     if (checkResults(output, resFromGPU, M * N)) {
         switch (kernel) {
             case 1:
-                benchmarkKernel(repeatTimes, softmax_kernel1, M * N / blockSize, blockSize, 0, 0,
+                benchmarkKernel(repeatTimes, softmax_kernel1, ceilDiv(M, blockSize), blockSize, 0, 0,
                                 &elapsedTime, inputGPU, outputGPU, M, N);
                 break;
             case 2:
