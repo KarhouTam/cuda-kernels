@@ -1,0 +1,11 @@
+repos:
+-   repo: local
+    hooks:
+    - id: clang-format
+      name: clang-format
+      entry: >
+        bash -c 'for f in "$@"; do clang-format -i "$f" || exit 1; git add "$f"; done' --
+      language: system
+      files: \.(c|cc|cpp|h|hpp|hh|cu|cuh)$
+      pass_filenames: true
+      stages: [pre-commit]
