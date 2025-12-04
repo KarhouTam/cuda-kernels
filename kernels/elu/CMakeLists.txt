@@ -1,0 +1,1 @@
+add_executable(elu_forward elu_forward.cu)
