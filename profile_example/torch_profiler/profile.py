@@ -6,6 +6,7 @@ from functools import partial
 
 import torch
 from torch.utils.cpp_extension import load
+from torch.profiler import profile, ProfilerActivity, record_function
 
 
 data = torch.randn(8196, 8196).cuda()
@@ -54,14 +55,15 @@ print(f"torch.softmax: Elapsed Time: {torch_softmax_elapsed_time:.4f} ms")
 print(f"customs.softmax: Elapsed Time: {custom_softmax_elapsed_time:.4f} ms")
 
 # profile the native softmax of pytorch
-print("=" * 60, "PyTorch Native Softmax", "=" * 60)
-with torch.autograd.profiler.profile(use_cuda=True) as prof:
-    torch.softmax(data, dim=1)
-print(prof.key_averages().table(sort_by="cuda_time_total", row_limit=10))
+with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA]) as prof:
+    with record_function("torch_softmax"):
+        torch.softmax(data, dim=1)
 
-# profile our custom softmax kernel
-print("=" * 60, "Custom Softmax", "=" * 60)
-with torch.autograd.profiler.profile(use_cuda=True) as prof:
-    # customs.softmax(data) # directly calling the kernel would let the profiler ignore it.
-    custom_softmax(data)  # so we need to wrap the kernel by torch.autograd.Function
+
+    with record_function("customs_softmax"):
+        # profile our custom softmax kernel
+        # customs.softmax(data) # directly calling the kernel would let the profiler ignore it.
+        custom_softmax(data)  # so we need to wrap the kernel by torch.autograd.Function
+
+
 print(prof.key_averages().table(sort_by="cuda_time_total", row_limit=10))
