@@ -1,0 +1,89 @@
+
+# .gitignore for CUDA / CMake projects
+# - Ignores common build artifacts, editor settings, Python envs, OS files, and CUDA-generated binaries.
+
+### Build / CMake
+/build/
+/build-*/
+cmake-build-*/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+install_manifest.txt
+compile_commands.json
+Makefile
+*.cmake
+
+### Binaries / objects / libraries
+*.o
+*.obj
+*.so
+*.a
+*.dylib
+*.dll
+*.exe
+*.out
+*.lo
+
+### CUDA / NVCC artifacts
+*.ptx
+*.cubin
+*.fatbin
+*.elf
+*.nvdisasm
+*.nvprof
+*.nvvp
+*.cu.o
+
+### Generated/temporary source files
+*.generated.cu
+*.generated.h
+
+### Profiling / traces / logs
+*.log
+*.prof
+*.trace
+profile/
+perf_*/
+
+### Python related (if using Python wrappers/tests)
+__pycache__/
+*.py[cod]
+*.pyo
+.Python
+env/
+venv/
+.venv/
+pip-wheel-metadata/
+pip-log.txt
+.pytest_cache/
+dist/
+build/
+*.egg-info/
+coverage/
+htmlcov/
+
+### IDEs / editors
+.vscode/
+.idea/
+*.iml
+.history/
+
+### OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+### Editor swap/backup
+*~
+*.swp
+.#*
+
+### Misc
+.ccache/
+tags
+tags.tmp
+*.tgz
+*.gz
+
+# End of .gitignore
